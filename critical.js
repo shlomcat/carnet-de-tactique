@@ -1,15 +1,17 @@
 /* Carnet de tactique — moments critiques.
  * Un moment critique est une position où un seul coup garde l'évaluation : l'écart entre le meilleur
- * et le deuxième meilleur coup du moteur dépasse 1,5 pion, sans être évident (reprise forcée, très peu de coups légaux). On mesure le temps que tu y as passé
+ * et le deuxième meilleur coup du moteur dépasse 1,5 pion, sans être évident pour un humain : reprise, parade directe
+ * à une menace qui vient d'apparaître, prise d'une pièce laissée en prise, parade à un échec avec peu de choix. On mesure le temps que tu y as passé
  * (grâce à la pendule enregistrée par Chess.com) et ce que tu y as joué.
  * Nécessite Chess (chess.js) et Strat (strategy.js). Les parties doivent contenir g.gap (analyse « moments critiques »).
  */
 (function (root) {
   "use strict";
   var CRIT = 150, CALM = 30, FAULT = 150;
-  var KIND = { danger: "Danger à parer", occasion: "Occasion à saisir", subtil: "Coup unique discret" };
+  var KIND = { contre: "Parade naturelle trompeuse", danger: "Danger à parer", occasion: "Occasion à saisir", subtil: "Coup unique discret" };
   var KIND_DESC = {
-    danger: "ton roi est en échec ou une de tes pièces est menacée",
+    contre: "l'adversaire vient de créer une menace, mais la parade réflexe n'est pas le bon coup",
+    danger: "une de tes pièces est en prise ou ton roi est en échec, et la réponse n'est pas évidente",
     occasion: "le bon coup est une prise ou un échec",
     subtil: "rien ne signale le danger : le bon coup est un coup calme"
   };
@@ -21,7 +23,7 @@
 
   function moves(Chess, Strat, g) {
     if (!g.gap || !g.mv || !g.ev || !g.ck) return [];
-    var ch = new Chess(), out = [], first = g.c === "w" ? 0 : 1, lastCap = null;
+    var ch = new Chess(), out = [], first = g.c === "w" ? 0 : 1, lastCap = null, lastTo = null, prevFen = null, fenBefore = null;
     for (var i = 0; i < g.mv.length; i++) {
       var fen = ch.fen(), u = g.mv[i], mine = (i % 2) === first;
       if (mine && i >= 10 && g.gap[i] != null && i >= 2 && g.ck[i] != null && g.ck[i - 2] != null) {
@@ -30,23 +32,36 @@
         var playable = ev0 > -300 && ev0 < 600;
         var item = { g: g, ply: i, n: (i >> 1) + 1, fen: fen, gap: gap, loss: loss, ev: ev0, t: spent, clock: g.ck[i], fault: loss >= FAULT,
           crit: playable && gap >= CRIT, calm: playable && gap <= CALM, bu: g.bm[i], pu: u };
-        // coups uniques évidents : peu de coups légaux, ou reprise de la pièce qui vient d'être prise
-        if (item.crit) {
-          var nLegal = ch.moves().length;
-          item.obvious = nLegal <= 3 || (lastCap && item.bu && item.bu.slice(2, 4) === lastCap);
-          if (item.obvious) item.crit = false;
-        }
         if (item.crit || item.calm) {
           var t1 = new Chess(fen), bm = item.bu && t1.move({ from: item.bu.slice(0, 2), to: item.bu.slice(2, 4), promotion: item.bu[4] || "q" });
           item.b = bm ? bm.san : null;
-          var thr = Strat.threats(fen, g.c).filter(function (x) { return x.t !== "p"; });
-          item.kind = ch.in_check() || thr.length ? "danger" : (bm && /[x+#]/.test(bm.san)) ? "occasion" : "subtil";
+          var thrNow = Strat.threats(fen, g.c).filter(function (x) { return x.t !== "p"; });
+          var thrPrev = prevFen ? Strat.threats(prevFen, g.c).filter(function (x) { return x.t !== "p"; }) : [];
+          var fresh = thrNow.filter(function (x) { return !thrPrev.some(function (y) { return y.sq === x.sq; }); });
+          var resolved = false;
+          if (fresh.length && bm) {
+            var after = Strat.threats(t1.fen(), g.c).filter(function (x) { return x.t !== "p"; }).map(function (x) { return x.sq; });
+            resolved = fresh.every(function (x) { var sq = x.sq === bm.from ? bm.to : x.sq; return after.indexOf(sq) < 0; });
+          }
+          var inCheck = ch.in_check(), nLegal = ch.moves().length;
+          // coups uniques évidents pour un humain
+          var why = null;
+          if (nLegal <= 3) why = "peu de coups";
+          else if (lastCap && item.bu && item.bu.slice(2, 4) === lastCap) why = "reprise";
+          else if (inCheck && nLegal <= 5) why = "parade à l'échec";
+          else if (fresh.length && resolved) why = "menace directe parée";
+          else if (bm && bm.captured && bm.to === lastTo) why = "prise de la pièce qui vient de jouer";
+          else if (bm && bm.captured && bm.captured !== "p" && Strat.threats(fen, g.c === "w" ? "b" : "w").some(function (x) { return x.sq === bm.to; })) why = "prise gratuite";
+          if (item.crit && why) { item.crit = false; item.obvious = why; }
+          item.kind = fresh.length && !resolved ? "contre" : inCheck || thrNow.length ? "danger" : (bm && /[x+#]/.test(bm.san)) ? "occasion" : "subtil";
         }
         out.push(item);
       }
+      fenBefore = fen;
       var m = ch.move({ from: u.slice(0, 2), to: u.slice(2, 4), promotion: u[4] || "q" });
       if (!m) break;
-      lastCap = m.captured ? m.to : null;
+      prevFen = fenBefore;
+      lastCap = m.captured ? m.to : null; lastTo = m.to;
       if (out.length && out[out.length - 1].ply === i) out[out.length - 1].p = m.san;
     }
     return out;
@@ -90,7 +105,7 @@
       }
       if (clockAtGaffe != null && gaffes.length >= 5) ins.push("Au moment de tes gaffes, il te restait typiquement environ " + fmtClock(clockAtGaffe) + " à la pendule : " + (clockAtGaffe >= 30 ? "le temps n'était pas le problème, c'est le signal d'alerte qui manquait." : "le manque de temps pèse vraiment."));
     }
-    return { available: true, all: all, crit: crit, calm: all.filter(function (x) { return x.calm; }), stats: stats, insights: ins };
+    return { available: true, obvious: all.filter(function (x) { return x.obvious; }), all: all, crit: crit, calm: all.filter(function (x) { return x.calm; }), stats: stats, insights: ins };
   }
   function fmtClock(s) { s = Math.round(s); var m = Math.floor(s / 60), r = s % 60; return (m ? m + " min " : "") + (r < 10 && m ? "0" : "") + r + " s"; }
 
