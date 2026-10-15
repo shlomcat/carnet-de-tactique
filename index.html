@@ -153,7 +153,7 @@ a{color:var(--info)}
       <div class="fld"><label for="u">Pseudo Chess.com</label><input id="u" autocomplete="off" spellcheck="false" required></div>
       <div class="fld"><label for="cad">Cadence</label><select id="cad"><option value="blitz">Blitz</option><option value="bullet">Bullet</option><option value="rapid">Rapide</option></select></div>
       <div class="fld"><label for="nb">Parties</label><select id="nb"><option>10</option><option selected>20</option><option>40</option></select></div>
-      <div class="fld"><label for="q">Analyse</label><select id="q"><option value="8">Rapide</option><option value="10" selected>Normale</option><option value="12">Fine</option></select></div>
+      <div class="fld"><label for="q">Analyse</label><select id="q"><option value="10">Rapide</option><option value="13" selected>Normale</option><option value="16">Fine</option></select></div>
       <button class="btn primary" id="go" type="submit">Analyser</button>
     </form>
   </header>
@@ -405,10 +405,10 @@ Les coups et évaluations de Stockfish font foi : ne les contredis pas et n'inve
 /* ---------- engine ---------- */
 class Engine{
   constructor(){
-    const src=`importScripts("https://cdn.jsdelivr.net/npm/stockfish.js@10.0.2/stockfish.js");`;
-    this.w=new Worker(URL.createObjectURL(new Blob([src],{type:"application/javascript"})));
+    if(typeof WebAssembly!=="object")throw new Error("Ce navigateur ne peut pas faire tourner le moteur d'analyse (WebAssembly indisponible).");
+    this.w=new Worker("stockfish.js");
     this.w.onmessage=e=>this.on(typeof e.data==="string"?e.data:String(e.data));
-    this.w.onerror=e=>{this.fail&&this.fail(new Error("Le moteur n'a pas pu se charger."))};
+    this.w.onerror=e=>{const m="Le moteur n'a pas pu se charger"+(e&&e.message?" ("+e.message+")":"")+".";this.dead=m;this.fail&&this.fail(new Error(m))};
     this.wait=null;this.last=null;
   }
   send(c){this.w.postMessage(c)}
@@ -418,7 +418,7 @@ class Engine{
     if(this.wait&&this.wait.test(l)){const w=this.wait;this.wait=null;w.res(l)}
   }
   async init(){const p=this.until(l=>l==="uciok",60000);this.send("uci");await p;const q=this.until(l=>l==="readyok");this.send("isready");await q}
-  async evalFen(fen,depth){this.last=null;const p=this.until(l=>l.startsWith("bestmove"));this.send("position fen "+fen);this.send(`go depth ${depth} movetime ${depth*90}`);const bm=await p;
+  async evalFen(fen,depth){this.last=null;const p=this.until(l=>l.startsWith("bestmove"));this.send("position fen "+fen);this.send(`go depth ${depth} movetime ${depth*250}`);const bm=await p;
     const b=bm.split(/\s+/)[1];let s=this.last||{k:"cp",v:0,pv:[]};
     if(b==="(none)"){const c=new Chess(fen);s=c.in_checkmate()?{k:"mate",v:0,pv:[]}:{k:"cp",v:0,pv:[]}}
     const cp=s.k==="mate"?(s.v>0?1500-s.v:s.v<0?-1500-s.v:-1500):s.v; // side-to-move POV
@@ -502,14 +502,14 @@ async function runAnalysis(user,allMetas,rows,srcLabel){
   const pick=allMetas.filter(m=>m.tc===cad).slice(-n);
   if(!pick.length){setStatus(`Aucune partie en ${cad} trouvée pour <b>${esc(user)}</b>. Essaie une autre cadence.`,null,true);busy=false;$("#go").disabled=false;return}
   try{
-    if(!ENG){setStatus("Chargement du moteur Stockfish…",0);ENG=new Engine();await ENG.init()}
+    if(!ENG){setStatus("Chargement du moteur Stockfish 17 (environ 7 Mo la première fois)…",0);ENG=new Engine();try{await ENG.init()}catch(e){ENG=null;throw e}}
     const out=[];const t0=Date.now();
     for(let k=0;k<pick.length;k++){
       const g=await analyseGame(pick[k],depth,(i,L)=>{const done=(k+i/L)/pick.length;const el=(Date.now()-t0)/1000,rem=done>0.02?Math.round(el/done-el):null;
         setStatus(`Analyse de la partie ${k+1} sur ${pick.length} · coup ${Math.floor(i/2)+1}${rem!=null?` · environ ${rem>90?Math.round(rem/60)+" min":rem+" s"} restantes`:""}`,done)});
       if(g)out.push(g);
     }
-    S={user,at:Date.now()/1000,rows,games:out,depth:`${srcLabel} · analyse dans le navigateur, profondeur ${depth}`};
+    S={user,at:Date.now()/1000,rows,games:out,depth:`${srcLabel} · Stockfish 17 dans le navigateur, profondeur ${depth}`};
     store.set("carnet:last",S);exI=0;
     setStatus("");renderAll();
   }catch(err){setStatus(esc(err.message||"L'analyse a échoué."),null,true)}
@@ -540,7 +540,7 @@ function renderAll(){
 }
 renderAll();
 /* écran étroit : réglages plus légers par défaut (le moteur est plus lent sur téléphone) */
-if(matchMedia("(max-width:600px)").matches&&!store.get("carnet:last")){$("#nb").value="10";$("#q").value="8"}
+if(matchMedia("(max-width:600px)").matches&&!store.get("carnet:last")){$("#nb").value="10";$("#q").value="10"}
 tab(store.get("carnet:tab")||"bilan");
 </script>
 
