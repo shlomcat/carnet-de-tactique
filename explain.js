@@ -237,6 +237,14 @@
     var depth = opts.depth || 13, fen0 = fens[i], fen1 = fens[i + 1], u = g.mv[i];
     var mover = i % 2 === 0 ? "w" : "b", other = opp(mover), mine = mover === g.c, P = pron(mine);
     var ctx = { ply: i, lastCapSq: opts.lastCapSq }, d = describe(Chess, Strat, fen0, u, ctx);
+    // suites de coups cliquables : chaque suite est remplacée dans le texte par un marqueur \u0001k\u0002
+    var L = [];
+    function S(f, ucis, n) {
+      var c = new Chess(f), sans = [], used = [];
+      for (var k = 0; k < (ucis || []).length && k < n; k++) { var m = mv(c, ucis[k]); if (!m) break; sans.push(m.san); used.push(ucis[k]); }
+      if (!sans.length) return "";
+      L.push({ fen: f, ucis: used, sans: sans }); return "\u0001" + (L.length - 1) + "\u0002";
+    }
     var A = await E(fen0, depth, 2);            // meilleure suite et alternative avant le coup
     var B = await E(fen1, depth, 1);            // meilleure réponse adverse après le coup
     var evBefore = A.cp, evAfter = -B.cp;       // du point de vue du joueur qui joue le coup
@@ -251,7 +259,7 @@
       if (caps.length) {
         var c1 = new Chess(fen1); c1.move(caps[0]); var fenC = c1.fen();
         var C = await E(fenC, depth, 1), Cinfo = lineInfo(Chess, fenC, C.pv, C.cp);
-        if (C.cp >= evAfter - 80) apparent = { san: caps[0].san, info: Cinfo, h: h };
+        if (C.cp >= evAfter - 80) apparent = { san: caps[0].san, info: Cinfo, h: h, fen: fenC, pv: C.pv, capUci: caps[0].from + caps[0].to };
       }
     }
     if (apparent) base = base.replace(/,? ?mais laisse .* en prise$/, "").replace(/^laisse .* en prise$/, "");
@@ -260,7 +268,7 @@
       var cs = conseq(apparent.info, mover);
       if (cs) cs = (mine ? "et tu " : "et l'adversaire ") + (mine ? cs.replace(/^gagne/, "gagnes").replace(/^mène/, "mènes").replace(/^force/, "forces").replace(/^permet/, "permets").replace(/^coûte/, "perds") : cs.replace(/^coûte/, "perd"));
       var pr = apparent.h.t === "q" || apparent.h.t === "r" ? "la" : "le";
-      out.push(cap(art(apparent.h.t, apparent.h.sq)) + " n'est en prise qu'en apparence : si " + (mine ? "l'adversaire " + pr + " prend" : "tu " + pr + " prends") + " (" + apparent.san + "), " + (apparent.info.sans.length ? apparent.info.sans.slice(0, 5).join(" ") + (cs ? " " + cs : "") : "la position reste équilibrée") + ".");
+      out.push(cap(art(apparent.h.t, apparent.h.sq)) + " n'est en prise qu'en apparence : si " + (mine ? "l'adversaire " + pr + " prend" : "tu " + pr + " prends") + " (" + S(fen1, [apparent.capUci].concat(apparent.pv), 1) + "), " + (apparent.info.sans.length ? S(apparent.fen, apparent.pv, 5) + (cs ? " " + cs : "") : "la position reste équilibrée") + ".");
     }
     // 2. la menace du coup : ce que le joueur jouerait s'il rejouait
     var fenN = nullMove(Chess, fen1);
@@ -275,20 +283,20 @@
         var positive = /^(gagne|mène|force)/.test(tc);
         if (/menace mat/.test(d.text)) positive = false;
         if (tSan && positive && (mateT || perpT || (!fault && gain >= 200 && evAfter < 400 && !already))) {
-          out.push((mine ? "Ton coup menace " : "Le coup menace ") + tSan + (tc ? ", qui " + tc : "") + (Tinfo.sans.length > 1 && !Tinfo.mate ? " (" + Tinfo.sans.slice(0, 5).join(" ") + ")" : "") + ".");
+          out.push((mine ? "Ton coup menace " : "Le coup menace ") + (Tinfo.sans.length > 1 && !Tinfo.mate ? tSan : S(fenN, T.pv, 3)) + (tc ? ", qui " + tc : "") + (Tinfo.sans.length > 1 && !Tinfo.mate ? " (" + S(fenN, T.pv, 5) + ")" : "") + ".");
         }
       }
     }
     // 3. verdict
     var decided = evBefore <= -400;
     if (isBest || loss < 30 || decided) {
-      if (new Chess(fen1).in_checkmate()) { out.push("Échec et mat."); return { text: out.join(" "), kind: "best", deep: true }; }
+      if (new Chess(fen1).in_checkmate()) { out.push("Échec et mat."); return { lines: L, text: out.join(" "), kind: "best", deep: true }; }
       if (isBest) {
         var ac = conseq(Ainfo, mover);
         var good = ac && /^(gagne|mène|force)/.test(ac) && (Ainfo.mate || Ainfo.perp || Math.abs(Ainfo.out.d) >= 2);
-        out.push("C'est le meilleur coup" + (good ? " : la suite " + Ainfo.sans.slice(0, 6).join(" ") + " " + ac : evBefore <= -150 ? ", même si la position reste difficile" : "") + ".");
-      } else if (!decided && A.pv[0]) out.push("Bon coup ; le moteur jouait " + Ainfo.sans[0] + " à peu près aussi bien.");
-      return { text: out.join(" "), kind: isBest ? "best" : "good", deep: true };
+        out.push("C'est le meilleur coup" + (good ? " : la suite " + S(fen0, A.pv, 6) + " " + ac : evBefore <= -150 ? ", même si la position reste difficile" : "") + ".");
+      } else if (!decided && A.pv[0]) out.push("Bon coup ; le moteur jouait " + S(fen0, A.pv, 1) + " à peu près aussi bien.");
+      return { lines: L, text: out.join(" "), kind: isBest ? "best" : "good", deep: true };
     }
     // prophylaxie : le meilleur coup rend impossible la réponse qui punissait le coup joué
     var proph = "";
@@ -297,29 +305,29 @@
       var legal = pb.moves({ verbose: true }).some(function (m) { return m.from + m.to === B.pv[0].slice(0, 4); });
       if (!legal && pb.turn() === other) {
         var rd = describe(Chess, Strat, fen1, B.pv[0], { ply: i + 1 });
-        proph = ", qui empêche " + (other === "b" ? "…" : "") + Binfo.sans[0] + (rd.text ? " (un coup qui " + rd.text.replace(/^menace /, "aurait menacé ").replace(/^avance /, "aurait avancé ") + ")" : "");
+        proph = ", qui empêche " + (other === "b" ? "…" : "") + S(fen1, B.pv, 1) + (rd.text ? " (un coup qui " + rd.text.replace(/^menace /, "aurait menacé ").replace(/^avance /, "aurait avancé ") + ")" : "");
       }
     }
     var label = loss >= 300 ? "gaffe" : loss >= 150 ? "erreur" : loss >= 80 ? "imprécision" : null;
     if (!label) {
       var bd0 = describe(Chess, Strat, fen0, A.pv[0], { ply: i });
-      out.push("Coup jouable, mais " + Ainfo.sans[0] + " était un peu plus précis" + (proph ? proph.replace(/^, qui /, " : il ") : bd0.text ? " : il " + bd0.text : "") + ".");
-      return { text: out.join(" "), kind: "ok", deep: true };
+      out.push("Coup jouable, mais " + S(fen0, A.pv, 1) + " était un peu plus précis" + (proph ? proph.replace(/^, qui /, " : il ") : bd0.text ? " : il " + bd0.text : "") + ".");
+      return { lines: L, text: out.join(" "), kind: "ok", deep: true };
     }
     // 4. pourquoi c'est une faute : la meilleure réponse adverse
-    var rc = conseq(Binfo, other), why = "";
+    var rc = conseq(Binfo, other), why = "", usedB = false;
     var played = outcome(Chess, fen0, [u].concat(B.pv), 6);
     var rep = mine ? " répond " : " réponds ";
-    if (Binfo.mate && Binfo.mate.side === other) why = P.Opp + rep + Binfo.sans[0] + " et " + rc + " (" + Binfo.sans.slice(0, 5).join(" ") + ").";
-    else if (Binfo.perp === other) why = P.Opp + " " + (mine ? "s'en sort" : "t'en sors") + " par un échec perpétuel : " + Binfo.sans.slice(0, 5).join(" ") + ".";
+    if (Binfo.mate && Binfo.mate.side === other) { why = P.Opp + rep + Binfo.sans[0] + " et " + rc + " (" + S(fen1, B.pv, 5) + ")."; usedB = true; }
+    else if (Binfo.perp === other) { why = P.Opp + " " + (mine ? "s'en sort" : "t'en sors") + " par un échec perpétuel : " + S(fen1, B.pv, 5) + "."; usedB = true; }
     else if (d.tags.indexOf("prise") >= 0 && VAL[d.piece] - VAL[d.captured] >= 2) why = (mine ? "Tu donnes " : "Il donne ") + art(d.piece) + " contre " + art(d.captured) + " : un échange très défavorable.";
-    else if (played.oppRun && played.oppRun.length && played.d > -3) why = "Après " + played.sans.slice(0, 4).join(" ") + "…, les pions passés adverses avancent (" + played.oppRun.join(", ") + ") et menacent d'aller à dame.";
-    else if (played.d <= -1) why = "Après " + played.sans.slice(0, 4).join(" ") + (played.sans.length > 4 ? "…" : "") + ", " + P.lose + " " + played.what + ".";
+    else if (played.oppRun && played.oppRun.length && played.d > -3) why = "Après " + S(fen0, [u].concat(B.pv), 4) + "…, les pions passés adverses avancent (" + played.oppRun.join(", ") + ") et menacent d'aller à dame.";
+    else if (played.d <= -1) why = "Après " + S(fen0, [u].concat(B.pv), 4) + (played.sans.length > 4 ? "…" : "") + ", " + P.lose + " " + played.what + ".";
     else if (d.tags.indexOf("prise") >= 0 && VAL[d.piece] - VAL[d.captured] >= 2) why = (mine ? "Tu donnes " : "Il donne ") + art(d.piece) + " contre " + art(d.captured) + " : un échange très défavorable.";
-    else if (played.oppRun && played.oppRun.length) why = "Après " + played.sans.slice(0, 4).join(" ") + "…, les pions passés adverses avancent (" + played.oppRun.join(", ") + ") et menacent d'aller à dame.";
+    else if (played.oppRun && played.oppRun.length) why = "Après " + S(fen0, [u].concat(B.pv), 4) + "…, les pions passés adverses avancent (" + played.oppRun.join(", ") + ") et menacent d'aller à dame.";
     else if (Binfo.sans.length) {
       var bdB = describe(Chess, Strat, fen1, B.pv[0], { ply: i + 1 });
-      why = P.Opp + rep + Binfo.sans[0] + (bdB.text ? ", qui " + bdB.text : "") + (rc ? " ; la suite " + Binfo.sans.slice(0, 6).join(" ") + " " + rc : "") + ".";
+      why = P.Opp + rep + S(fen1, B.pv, 1) + (bdB.text ? ", qui " + bdB.text : "") + (rc ? " ; la suite " + S(fen1, B.pv, 6) + " " + rc : "") + "."; usedB = true;
     }
     var tact = !!(Binfo.mate || Binfo.perp || played.d <= -1 || (Ainfo.out.d * (Ainfo.stm === mover ? 1 : -1)) >= 2 || Ainfo.mate || Ainfo.perp);
     var reading = opts.reading, nature = tact ? "tactique" : reading ? reading.nature : null;
@@ -329,11 +337,13 @@
     // 5. pourquoi le meilleur coup est meilleur
     if (A.pv[0]) {
       var bd = describe(Chess, Strat, fen0, A.pv[0], { ply: i }), ac2 = conseq(Ainfo, mover);
-      var ac2t = ac2 ? (/^coûte /.test(ac2) ? " ; la suite " + Ainfo.sans.slice(0, 6).join(" ") + " limite la casse (elle ne " + ac2.replace(/^coûte /, "coûte que ") + ")" : " ; la suite " + Ainfo.sans.slice(0, 6).join(" ") + " " + ac2) : "";
-      out.push("Il fallait jouer " + Ainfo.sans[0] + (proph || (bd.text ? ", qui " + bd.text : "")) + ac2t + ".");
+      var ac2t = ac2 ? (/^coûte /.test(ac2) ? " ; la suite " + S(fen0, A.pv, 6) + " limite la casse (elle ne " + ac2.replace(/^coûte /, "coûte que ") + ")" : " ; la suite " + S(fen0, A.pv, 6) + " " + ac2) : "";
+      out.push("Il fallait jouer " + S(fen0, A.pv, 1) + (proph || (bd.text ? ", qui " + bd.text : "")) + ac2t + ".");
     }
-    if (!mine && Binfo.sans[0] && why.indexOf(Binfo.sans[0]) < 0) out.push("À toi d'en profiter avec " + Binfo.sans[0] + ".");
-    return { text: out.join(" "), kind: label, tact: tact, deep: true };
+    if (/Après \u0001/.test(why)) usedB = true;
+    if (!mine && Binfo.sans[0] && !usedB) out.push("À toi d'en profiter avec " + S(fen1, B.pv, 1) + ".");
+    return { lines: L, text: out.join(" "), kind: label, tact: tact, deep: true };
   }
-  root.Explain = { describe: describe, outcome: outcome, comment: comment, deepComment: deepComment, lineInfo: lineInfo };
+  function plain(r) { return r && r.text ? r.text.replace(/\u0001(\d+)\u0002/g, function (_, k) { return r.lines[+k] ? r.lines[+k].sans.join(" ") : ""; }) : ""; }
+  root.Explain = { plain: plain, describe: describe, outcome: outcome, comment: comment, deepComment: deepComment, lineInfo: lineInfo };
 })(typeof window !== "undefined" ? window : module.exports);
