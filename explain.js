@@ -40,7 +40,7 @@
     if (m.captured) {
       var recapt = attacked(after, m.to);
       if (ctx.lastCapSq === m.to) { parts.push("reprend " + art(m.captured, m.to)); tags.push("reprise"); }
-      else if (!recapt && VAL[m.captured] >= 1) { parts.push("prend " + art(m.captured, m.to) + " sans contrepartie immédiate"); tags.push("gain"); }
+      else if (!recapt && VAL[m.captured] >= 1) { parts.push("prend " + art(m.captured, m.to) + (ch.in_checkmate() ? "" : " sans contrepartie immédiate")); tags.push("gain"); }
       else if (VAL[m.captured] >= VAL[m.piece] && m.piece !== "k") { parts.push("prend " + art(m.captured, m.to) + (VAL[m.captured] > VAL[m.piece] ? " avec une pièce de moindre valeur" : " : c'est un échange")); tags.push("echange"); }
       else { parts.push("prend " + art(m.captured, m.to) + ", mais " + art(m.piece) + " peut être reprise" + " : l'échange est défavorable"); tags.push("prise"); ctx.skipTo = m.to; }
     }
@@ -89,19 +89,35 @@
 
   // Bilan matériel d'une suite de coups (uci), du point de vue du camp qui a le trait au départ.
   function outcome(Chess, fen, line, maxPlies) {
-    var ch = new Chess(fen), me = ch.turn(), d = 0, sans = [], gotR = 0, gotMinor = 0, lostR = 0, lostMinor = 0, mate = false, oppRun = [];
+    var ch = new Chess(fen), me = ch.turn(), d = 0, sans = [], gotR = 0, gotMinor = 0, lostR = 0, lostMinor = 0, mate = false, oppRun = [], got = [], lost = [];
     for (var i = 0; i < line.length && i < (maxPlies || 8); i++) {
       var m = mv(ch, line[i]); if (!m) break; sans.push(m.san);
       if (m.piece === "p" && m.color !== me) { var rel = m.color === "w" ? +m.to[1] : 9 - +m.to[1]; if (rel >= 6) oppRun.push(m.san); }
       if (m.captured) {
         var v = VAL[m.captured] + (m.promotion ? VAL[m.promotion] - 1 : 0);
-        if (m.color === me) { d += v; if (m.captured === "r") gotR++; if ("nb".indexOf(m.captured) >= 0) gotMinor++; }
-        else { d -= v; if (m.captured === "r") lostR++; if ("nb".indexOf(m.captured) >= 0) lostMinor++; }
+        if (m.color === me) { d += v; got.push(m.captured); if (m.captured === "r") gotR++; if ("nb".indexOf(m.captured) >= 0) gotMinor++; }
+        else { d -= v; lost.push(m.captured); if (m.captured === "r") lostR++; if ("nb".indexOf(m.captured) >= 0) lostMinor++; }
       } else if (m.promotion) d += (m.color === me ? 1 : -1) * (VAL[m.promotion] - 1);
       if (ch.in_checkmate()) { mate = m.color === me ? 1 : -1; break; }
     }
     var exch = Math.abs(d) === 2 && ((gotR && lostMinor) || (lostR && gotMinor));
-    return { d: d, sans: sans, mate: mate, what: matText(Math.abs(d), exch), oppRun: oppRun };
+    return { d: d, sans: sans, mate: mate, what: exch ? "la qualité" : tradeText(got, lost, d), oppRun: oppRun };
+  }
+  // « le cavalier contre un pion », « deux pions », « la tour »… à partir des pièces prises de part et d'autre
+  function tradeText(got, lost, d) {
+    var g = got.slice(), l = lost.slice();
+    for (var i = g.length - 1; i >= 0; i--) { var k = l.indexOf(g[i]); if (k >= 0) { l.splice(k, 1); g.splice(i, 1); } }
+    function names(a) {
+      var cnt = {}; a.forEach(function (t) { cnt[t] = (cnt[t] || 0) + 1; });
+      var NUM = ["", "un", "deux", "trois", "quatre", "cinq"];
+      return list(["q", "r", "b", "n", "p"].filter(function (t) { return cnt[t]; }).map(function (t) {
+        var n = cnt[t]; if (n === 1) return t === "p" ? "un pion" : t === "n" || t === "b" ? (g.length + l.length > 1 ? art(t) : "une pièce") : art(t);
+        return (NUM[n] || n) + " " + (t === "p" ? "pions" : t === "n" ? "cavaliers" : t === "b" ? "fous" : t === "r" ? "tours" : "dames");
+      }));
+    }
+    var win = d >= 0 ? g : l, give = d >= 0 ? l : g;
+    if (!win.length) return matText(Math.abs(d));
+    return names(win) + (give.length ? " contre " + names(give) : "");
   }
   function matText(v, exch) {
     if (exch) return "la qualité";
@@ -183,5 +199,131 @@
     return { text: out.join(" "), kind: label, tact: tact };
   }
 
-  root.Explain = { describe: describe, outcome: outcome, comment: comment };
+
+  /* ---------- analyse approfondie (moteur à la demande) ---------- */
+  function nullMove(Chess, fen) { // même position, mais c'est au camp qui vient de jouer de rejouer
+    var c = new Chess(fen); if (c.in_check()) return null;
+    var f = fen.split(" "); f[1] = f[1] === "w" ? "b" : "w"; f[3] = "-";
+    var t = new Chess(); return t.load(f.join(" ")) ? t.fen() : null;
+  }
+  // Nature d'une suite : mat, échec perpétuel, répétition, bilan matériel. cp : score pour le camp au trait.
+  function lineInfo(Chess, fen, pv, cp) {
+    var ch = new Chess(fen), stm = ch.turn(), checks = { w: 0, b: 0 }, moves = { w: 0, b: 0 }, seen = {}, rep = false, sans = [];
+    seen[fen.split(" ").slice(0, 2).join(" ")] = 1;
+    for (var i = 0; i < pv.length && i < 12; i++) {
+      var m = mv(ch, pv[i]); if (!m) break; sans.push(m.san); moves[m.color]++;
+      if (ch.in_check()) checks[m.color]++;
+      var k = ch.fen().split(" ").slice(0, 2).join(" "); if (seen[k]) rep = true; seen[k] = 1;
+    }
+    var info = { sans: sans, stm: stm, cp: cp, mate: null, perp: null, rep: rep, out: outcome(Chess, fen, pv, 8) };
+    if (Math.abs(cp) >= 1400) info.mate = { side: cp > 0 ? stm : opp(stm), n: Math.max(1, 1500 - Math.abs(cp)) };
+    else if (Math.abs(cp) <= 50) ["w", "b"].forEach(function (c) { if (checks[c] >= 3 && checks[c] >= moves[c] - 1) info.perp = c; else if (rep && checks[c] >= 2 && checks[c] >= moves[c] - 1) info.perp = c; });
+    return info;
+  }
+  // Conséquence d'une suite, formulée pour le camp `side`.
+  function conseq(info, side) {
+    if (info.mate) return info.mate.side === side ? "mène au mat en " + info.mate.n + " coup" + (info.mate.n > 1 ? "s" : "") : "permet à l'adversaire de mater en " + info.mate.n;
+    if (info.perp) return info.perp === side ? "force un échec perpétuel, donc la nulle" : "permet à l'adversaire de s'en sortir par un échec perpétuel";
+    var d = info.out.d * (info.stm === side ? 1 : -1);
+    if (d >= 1) return "gagne " + info.out.what;
+    if (d <= -1) return "coûte " + info.out.what;
+    return "";
+  }
+  function pron(mine) { return mine ? { Who: "Tu", who: "tu", verb: " joues ", lose: "tu perds", his: "ton", Opp: "L'adversaire", opp: "l'adversaire", can: "peux" } : { Who: "L'adversaire", who: "il", verb: " joue ", lose: "il perd", his: "son", Opp: "Tu", opp: "toi", can: "peut" }; }
+
+  /* Commentaire approfondi. E(fen, depth, multipv) -> Promise<{cp, cp2, pv, pv2}> (scores pour le camp au trait). */
+  async function deepComment(Chess, Strat, E, g, i, fens, opts) {
+    opts = opts || {};
+    var depth = opts.depth || 13, fen0 = fens[i], fen1 = fens[i + 1], u = g.mv[i];
+    var mover = i % 2 === 0 ? "w" : "b", other = opp(mover), mine = mover === g.c, P = pron(mine);
+    var ctx = { ply: i, lastCapSq: opts.lastCapSq }, d = describe(Chess, Strat, fen0, u, ctx);
+    var A = await E(fen0, depth, 2);            // meilleure suite et alternative avant le coup
+    var B = await E(fen1, depth, 1);            // meilleure réponse adverse après le coup
+    var evBefore = A.cp, evAfter = -B.cp;       // du point de vue du joueur qui joue le coup
+    var loss = evBefore - evAfter;
+    var isBest = A.pv[0] && A.pv[0].slice(0, 4) === u.slice(0, 4);
+    var Ainfo = lineInfo(Chess, fen0, A.pv, A.cp), Binfo = lineInfo(Chess, fen1, B.pv, B.cp);
+    var out = [], parts = [];
+    // 1. ce que fait le coup, en vérifiant si la pièce « en prise » l'est vraiment
+    var base = d.text, apparent = null;
+    if (ctx.hung && ctx.hung.length && !new Chess(fen1).in_checkmate()) {
+      var h = ctx.hung[0], caps = new Chess(fen1).moves({ verbose: true }).filter(function (m) { return m.to === h.sq; });
+      if (caps.length) {
+        var c1 = new Chess(fen1); c1.move(caps[0]); var fenC = c1.fen();
+        var C = await E(fenC, depth, 1), Cinfo = lineInfo(Chess, fenC, C.pv, C.cp);
+        if (C.cp >= evAfter - 80) apparent = { san: caps[0].san, info: Cinfo, h: h };
+      }
+    }
+    if (apparent) base = base.replace(/,? ?mais laisse .* en prise$/, "").replace(/^laisse .* en prise$/, "");
+    out.push(P.Who + P.verb + (d.san || "") + (base ? " : " + base : "") + ".");
+    if (apparent) {
+      var cs = conseq(apparent.info, mover);
+      if (cs) cs = (mine ? "et tu " : "et l'adversaire ") + (mine ? cs.replace(/^gagne/, "gagnes").replace(/^mène/, "mènes").replace(/^force/, "forces").replace(/^permet/, "permets").replace(/^coûte/, "perds") : cs.replace(/^coûte/, "perd"));
+      var pr = apparent.h.t === "q" || apparent.h.t === "r" ? "la" : "le";
+      out.push(cap(art(apparent.h.t, apparent.h.sq)) + " n'est en prise qu'en apparence : si " + (mine ? "l'adversaire " + pr + " prend" : "tu " + pr + " prends") + " (" + apparent.san + "), " + (apparent.info.sans.length ? apparent.info.sans.slice(0, 5).join(" ") + (cs ? " " + cs : "") : "la position reste équilibrée") + ".");
+    }
+    // 2. la menace du coup : ce que le joueur jouerait s'il rejouait
+    var fenN = nullMove(Chess, fen1);
+    if (fenN && !new Chess(fen1).game_over()) {
+      var T = await E(fenN, depth, 1);
+      if (T.pv && T.pv[0]) {
+        var Tinfo = lineInfo(Chess, fenN, T.pv, T.cp), gain = T.cp - evAfter;
+        var tSan = Tinfo.sans[0], tc = conseq(Tinfo, mover);
+        var already = d.text.indexOf(tSan.replace(/[+#]/g, "").slice(-2)) >= 0 && /menace/.test(d.text);
+        var mateT = Tinfo.mate && Tinfo.mate.side === mover && Tinfo.mate.n <= 3, perpT = Tinfo.perp === mover && evAfter < -80;
+        var fault = evBefore - evAfter >= 80;
+        var positive = /^(gagne|mène|force)/.test(tc);
+        if (/menace mat/.test(d.text)) positive = false;
+        if (tSan && positive && (mateT || perpT || (!fault && gain >= 200 && evAfter < 400 && !already))) {
+          out.push((mine ? "Ton coup menace " : "Le coup menace ") + tSan + (tc ? ", qui " + tc : "") + (Tinfo.sans.length > 1 && !Tinfo.mate ? " (" + Tinfo.sans.slice(0, 5).join(" ") + ")" : "") + ".");
+        }
+      }
+    }
+    // 3. verdict
+    var decided = evBefore <= -400;
+    if (isBest || loss < 30 || decided) {
+      if (new Chess(fen1).in_checkmate()) { out.push("Échec et mat."); return { text: out.join(" "), kind: "best", deep: true }; }
+      if (isBest) {
+        var ac = conseq(Ainfo, mover);
+        var good = ac && /^(gagne|mène|force)/.test(ac) && (Ainfo.mate || Ainfo.perp || Math.abs(Ainfo.out.d) >= 2);
+        out.push("C'est le meilleur coup" + (good ? " : la suite " + Ainfo.sans.slice(0, 6).join(" ") + " " + ac : evBefore <= -150 ? ", même si la position reste difficile" : "") + ".");
+      } else if (!decided && A.pv[0]) out.push("Bon coup ; le moteur jouait " + Ainfo.sans[0] + " à peu près aussi bien.");
+      return { text: out.join(" "), kind: isBest ? "best" : "good", deep: true };
+    }
+    var label = loss >= 300 ? "gaffe" : loss >= 150 ? "erreur" : loss >= 80 ? "imprécision" : null;
+    if (!label) {
+      var bd0 = describe(Chess, Strat, fen0, A.pv[0], { ply: i });
+      out.push("Coup jouable, mais " + Ainfo.sans[0] + " était un peu plus précis" + (bd0.text ? " : il " + bd0.text : "") + ".");
+      return { text: out.join(" "), kind: "ok", deep: true };
+    }
+    // 4. pourquoi c'est une faute : la meilleure réponse adverse
+    var rc = conseq(Binfo, other), why = "";
+    var played = outcome(Chess, fen0, [u].concat(B.pv), 6);
+    var rep = mine ? " répond " : " réponds ";
+    if (Binfo.mate && Binfo.mate.side === other) why = P.Opp + rep + Binfo.sans[0] + " et " + rc + " (" + Binfo.sans.slice(0, 5).join(" ") + ").";
+    else if (Binfo.perp === other) why = P.Opp + " " + (mine ? "s'en sort" : "t'en sors") + " par un échec perpétuel : " + Binfo.sans.slice(0, 5).join(" ") + ".";
+    else if (d.tags.indexOf("prise") >= 0 && VAL[d.piece] - VAL[d.captured] >= 2) why = (mine ? "Tu donnes " : "Il donne ") + art(d.piece) + " contre " + art(d.captured) + " : un échange très défavorable.";
+    else if (played.oppRun && played.oppRun.length && played.d > -3) why = "Après " + played.sans.slice(0, 4).join(" ") + "…, les pions passés adverses avancent (" + played.oppRun.join(", ") + ") et menacent d'aller à dame.";
+    else if (played.d <= -1) why = "Après " + played.sans.slice(0, 4).join(" ") + (played.sans.length > 4 ? "…" : "") + ", " + P.lose + " " + played.what + ".";
+    else if (d.tags.indexOf("prise") >= 0 && VAL[d.piece] - VAL[d.captured] >= 2) why = (mine ? "Tu donnes " : "Il donne ") + art(d.piece) + " contre " + art(d.captured) + " : un échange très défavorable.";
+    else if (played.oppRun && played.oppRun.length) why = "Après " + played.sans.slice(0, 4).join(" ") + "…, les pions passés adverses avancent (" + played.oppRun.join(", ") + ") et menacent d'aller à dame.";
+    else if (Binfo.sans.length) {
+      var bdB = describe(Chess, Strat, fen1, B.pv[0], { ply: i + 1 });
+      why = P.Opp + rep + Binfo.sans[0] + (bdB.text ? ", qui " + bdB.text : "") + (rc ? " ; la suite " + Binfo.sans.slice(0, 6).join(" ") + " " + rc : "") + ".";
+    }
+    var tact = !!(Binfo.mate || Binfo.perp || played.d <= -1 || (Ainfo.out.d * (Ainfo.stm === mover ? 1 : -1)) >= 2 || Ainfo.mate || Ainfo.perp);
+    var reading = opts.reading, nature = tact ? "tactique" : reading ? reading.nature : null;
+    if (!tact && reading && reading.findings.length && reading.nature === "stratégique") why = (why ? why + " " : "") + cap(reading.findings[0].txt.replace(/\.$/, "")) + ".";
+    var qual = nature === "stratégique" ? " stratégique" : nature === "tactique" ? " tactique" : nature === "concret" ? " de calcul" : "";
+    out.push("C'est une " + label + qual + ", qui coûte environ " + (loss / 100).toFixed(1).replace(".", ",") + " pion" + (Math.round(loss / 10) >= 20 ? "s" : "") + "." + (why ? " " + why : ""));
+    // 5. pourquoi le meilleur coup est meilleur
+    if (A.pv[0]) {
+      var bd = describe(Chess, Strat, fen0, A.pv[0], { ply: i }), ac2 = conseq(Ainfo, mover);
+      var ac2t = ac2 ? (/^coûte /.test(ac2) ? " ; la suite " + Ainfo.sans.slice(0, 6).join(" ") + " limite la casse (elle ne " + ac2.replace(/^coûte /, "coûte que ") + ")" : " ; la suite " + Ainfo.sans.slice(0, 6).join(" ") + " " + ac2) : "";
+      out.push("Il fallait jouer " + Ainfo.sans[0] + (bd.text ? ", qui " + bd.text : "") + ac2t + ".");
+    }
+    if (!mine && Binfo.sans[0] && why.indexOf(Binfo.sans[0]) < 0) out.push("À toi d'en profiter avec " + Binfo.sans[0] + ".");
+    return { text: out.join(" "), kind: label, tact: tact, deep: true };
+  }
+  root.Explain = { describe: describe, outcome: outcome, comment: comment, deepComment: deepComment, lineInfo: lineInfo };
 })(typeof window !== "undefined" ? window : module.exports);
