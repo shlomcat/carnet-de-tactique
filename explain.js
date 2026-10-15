@@ -290,10 +290,20 @@
       } else if (!decided && A.pv[0]) out.push("Bon coup ; le moteur jouait " + Ainfo.sans[0] + " à peu près aussi bien.");
       return { text: out.join(" "), kind: isBest ? "best" : "good", deep: true };
     }
+    // prophylaxie : le meilleur coup rend impossible la réponse qui punissait le coup joué
+    var proph = "";
+    if (B.pv[0]) {
+      var pb = new Chess(fen0); mv(pb, A.pv[0]);
+      var legal = pb.moves({ verbose: true }).some(function (m) { return m.from + m.to === B.pv[0].slice(0, 4); });
+      if (!legal && pb.turn() === other) {
+        var rd = describe(Chess, Strat, fen1, B.pv[0], { ply: i + 1 });
+        proph = ", qui empêche " + (other === "b" ? "…" : "") + Binfo.sans[0] + (rd.text ? " (un coup qui " + rd.text.replace(/^menace /, "aurait menacé ").replace(/^avance /, "aurait avancé ") + ")" : "");
+      }
+    }
     var label = loss >= 300 ? "gaffe" : loss >= 150 ? "erreur" : loss >= 80 ? "imprécision" : null;
     if (!label) {
       var bd0 = describe(Chess, Strat, fen0, A.pv[0], { ply: i });
-      out.push("Coup jouable, mais " + Ainfo.sans[0] + " était un peu plus précis" + (bd0.text ? " : il " + bd0.text : "") + ".");
+      out.push("Coup jouable, mais " + Ainfo.sans[0] + " était un peu plus précis" + (proph ? proph.replace(/^, qui /, " : il ") : bd0.text ? " : il " + bd0.text : "") + ".");
       return { text: out.join(" "), kind: "ok", deep: true };
     }
     // 4. pourquoi c'est une faute : la meilleure réponse adverse
@@ -320,7 +330,7 @@
     if (A.pv[0]) {
       var bd = describe(Chess, Strat, fen0, A.pv[0], { ply: i }), ac2 = conseq(Ainfo, mover);
       var ac2t = ac2 ? (/^coûte /.test(ac2) ? " ; la suite " + Ainfo.sans.slice(0, 6).join(" ") + " limite la casse (elle ne " + ac2.replace(/^coûte /, "coûte que ") + ")" : " ; la suite " + Ainfo.sans.slice(0, 6).join(" ") + " " + ac2) : "";
-      out.push("Il fallait jouer " + Ainfo.sans[0] + (bd.text ? ", qui " + bd.text : "") + ac2t + ".");
+      out.push("Il fallait jouer " + Ainfo.sans[0] + (proph || (bd.text ? ", qui " + bd.text : "")) + ac2t + ".");
     }
     if (!mine && Binfo.sans[0] && why.indexOf(Binfo.sans[0]) < 0) out.push("À toi d'en profiter avec " + Binfo.sans[0] + ".");
     return { text: out.join(" "), kind: label, tact: tact, deep: true };
