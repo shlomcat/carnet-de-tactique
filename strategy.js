@@ -270,5 +270,20 @@
     avantposte: "Avant-postes", structure: "Structure de pions", passe: "Pions passés", colonne: "Colonnes ouvertes", fous: "Fous (paire, mauvais fou)",
     activite: "Activité des pièces", espace: "Espace", centre: "Centre", developpement: "Développement et roque" };
 
-  root.Strat = { features: features, compare: compare, THEMES: THEMES, sqName: sqName };
+  // pièces en danger pour le camp `me` : attaquées et non défendues, ou attaquées par une pièce de moindre valeur
+  function threats(fen, me) {
+    var B = parse(fen), o = opp(me), minAtt = { w: new Array(64).fill(99), b: new Array(64).fill(99) }, def = new Array(64).fill(0), out = [];
+    for (var s = 0; s < 64; s++) if (B[s]) attacks(B, s).forEach(function (t) {
+      var v = B[s].t === "k" ? 50 : VAL[B[s].t];
+      if (v < minAtt[B[s].c][t]) minAtt[B[s].c][t] = v;
+      if (B[s].c === me) def[t]++;
+    });
+    for (s = 0; s < 64; s++) {
+      var p = B[s]; if (!p || p.c !== me || p.t === "k") continue;
+      var a = minAtt[o][s]; if (a === 99) continue;
+      if (def[s] === 0 || a < VAL[p.t]) out.push({ sq: sqName(s), t: p.t });
+    }
+    return out;
+  }
+  root.Strat = { features: features, compare: compare, threats: threats, THEMES: THEMES, sqName: sqName };
 })(typeof window !== "undefined" ? window : module.exports);
