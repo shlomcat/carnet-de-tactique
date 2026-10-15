@@ -345,5 +345,5 @@
     return { lines: L, text: out.join(" "), kind: label, tact: tact, deep: true };
   }
   function plain(r) { return r && r.text ? r.text.replace(/\u0001(\d+)\u0002/g, function (_, k) { return r.lines[+k] ? r.lines[+k].sans.join(" ") : ""; }) : ""; }
-  root.Explain = { plain: plain, describe: describe, outcome: outcome, comment: comment, deepComment: deepComment, lineInfo: lineInfo };
+  root.Explain = { nullMove: nullMove, plain: plain, describe: describe, outcome: outcome, comment: comment, deepComment: deepComment, lineInfo: lineInfo };
 })(typeof window !== "undefined" ? window : module.exports);
