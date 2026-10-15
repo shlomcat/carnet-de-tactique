@@ -5,3 +5,4 @@ Analyse de parties Chess.com avec Stockfish, directement dans le navigateur, et 
 Site : https://shlomcat.github.io/carnet-de-tactique/
 
 Moteur : Stockfish 17.1 lite (GPLv3), hébergé avec le site — voir STOCKFISH-LICENSE.txt.
+Échiquier : chessground (Lichess, GPL-3.0) avec les pièces cburnett.
