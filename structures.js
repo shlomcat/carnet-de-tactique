@@ -29,7 +29,7 @@
   function any(S, list) { return list.some(function (x) { return S[x]; }); }
 
   var DEFS = [
-    { id: "iqp", roleA: "avec le pion isolé", roleB: "contre le pion isolé", name: "Pion-dame isolé",
+    { id: "iqp", wingA: "k", wingB: "c", roleA: "avec le pion isolé", roleB: "contre le pion isolé", name: "Pion-dame isolé",
       test: function (A, B) { return on(A, "d4") && !file(A, "c") && !file(A, "e") && !file(B, "d"); },
       desc: "Un camp a un pion d isolé au centre : il gagne de l'activité et des cases (e5, c5) mais le pion est une cible à long terme.",
       planA: "Joue pour l'initiative : pièces actives, cavalier en e5, batterie dame-fou contre le roque, tours sur les colonnes c et e, et poussée d5 au bon moment pour ouvrir le jeu. Évite les échanges.",
@@ -37,7 +37,7 @@
       trapA: "Échanger les pièces sans contrepartie ; laisser l'adversaire installer un bloqueur en d5.",
       trapB: "Attaquer le pion trop tôt et laisser l'initiative adverse se développer contre ton roi." },
 
-    { id: "hanging", roleA: "avec les pions pendants", roleB: "contre les pions pendants", name: "Pions pendants",
+    { id: "hanging", wingA: "c", wingB: "c", roleA: "avec les pions pendants", roleB: "contre les pions pendants", name: "Pions pendants",
       test: function (A, B) { return on(A, "c4") && on(A, "d4") && !file(A, "b") && !file(A, "e") && !file(B, "c") && !file(B, "d"); },
       desc: "Deux pions c et d côte à côte, sans voisins : dynamiques tant qu'ils restent sur la même rangée, faibles s'ils sont forcés d'avancer.",
       planA: "Garde les deux pions sur la même rangée, place tes pièces derrière eux et menace d5 ou c5 pour ouvrir le jeu au moment favorable.",
@@ -45,7 +45,7 @@
       trapA: "Pousser un des pions sans nécessité, ce qui crée une case de blocage et un pion arriéré.",
       trapB: "Laisser les pions avancer en bloc et ouvrir le centre contre toi." },
 
-    { id: "carlsbad", roleA: "côté attaque de minorité", roleB: "côté c6-d5", name: "Carlsbad",
+    { id: "carlsbad", wingA: "q", wingB: "k", roleA: "côté attaque de minorité", roleB: "côté c6-d5", name: "Carlsbad",
       test: function (A, B) { return on(A, "d4") && !file(A, "c") && file(A, "e") && on(B, "d5") && any(B, ["c6", "c7"]) && !file(B, "e"); },
       desc: "La structure du Gambit Dame échange : colonne c semi-ouverte pour un camp, colonne e semi-ouverte pour l'autre.",
       planA: "Attaque de minorité : b4-b5 pour échanger sur c6 et laisser un pion faible en c6 ou un pion isolé en d5. Plan alternatif : f3 puis e4 après bonne préparation.",
@@ -53,7 +53,7 @@
       trapA: "Pousser e4 trop tôt et te retrouver avec un pion-dame isolé sans compensation.",
       trapB: "Subir passivement l'attaque de minorité sans contre-jeu sur l'aile roi." },
 
-    { id: "caro", roleA: "côté d4, avec l'espace", roleB: "côté c6 (Caro / Slave)", name: "Caro-Kann / Slave (c6 contre d4)",
+    { id: "caro", wingA: "k", wingB: "c", roleA: "côté d4, avec l'espace", roleB: "côté c6 (Caro / Slave)", name: "Caro-Kann / Slave (c6 contre d4)",
       test: function (A, B) { return on(A, "d4") && !file(A, "e") && on(B, "c6") && !file(B, "d") && !on(B, "e5"); },
       desc: "Le camp au pion d4 a plus d'espace ; l'autre a une structure très solide mais un peu passive, qu'il doit libérer.",
       planA: "Profite de l'espace : cavalier en e5, gain d'espace à l'aile roi (h4-h5 dans la Caro classique), et empêche les poussées libératrices c5 et e5 adverses.",
@@ -61,7 +61,7 @@
       trapA: "T'étendre sans soutien (h5, g4) et laisser des cases faibles ; laisser l'adversaire libérer par c5 sans réaction.",
       trapB: "Attendre trop longtemps : sans c5 ou e5, l'espace adverse finit par t'étouffer." },
 
-    { id: "french", roleA: "côté e5-d4", roleB: "côté e6-d5", name: "Chaîne française (e5-d4 contre e6-d5)",
+    { id: "french", wingA: "k", wingB: "q", roleA: "côté e5-d4", roleB: "côté e6-d5", name: "Chaîne française (e5-d4 contre e6-d5)",
       test: function (A, B) { return on(A, "e5") && on(A, "d4") && on(B, "e6") && on(B, "d5"); },
       desc: "Chaînes de pions imbriquées : on attaque la base de la chaîne adverse et on joue du côté où pointe sa propre chaîne.",
       planA: "Joue à l'aile roi, où pointe ta chaîne : f4-f5, attaque contre le roque. Tiens absolument d4, la base qui soutient e5.",
@@ -69,7 +69,7 @@
       trapA: "Laisser tomber d4 ; échanger trop vite sur c5 et libérer le jeu adverse.",
       trapB: "Oublier f6 et te faire étouffer à l'aile roi." },
 
-    { id: "wedge", roleA: "avec le pion e5", roleB: "contre le pion e5", name: "Coin e5 (centre semi-fermé)",
+    { id: "wedge", wingA: "k", wingB: "q", roleA: "avec le pion e5", roleB: "contre le pion e5", name: "Coin e5 (centre semi-fermé)",
       test: function (A, B) { return on(A, "e5") && !file(A, "d") && any(B, ["e6", "e7"]) && !file(B, "d"); },
       desc: "Un pion avancé en e5 coupe l'échiquier : il prend de l'espace et prive l'adversaire de d6 et f6, mais il doit être soutenu.",
       planA: "Utilise l'espace à l'aile roi (Dg4, f4-f5, cavalier vers g5 ou d6) et soutiens e5 avec f4 et tes pièces ; la case d4 est idéale pour un cavalier.",
@@ -77,7 +77,7 @@
       trapA: "Laisser tomber e5 faute de soutien.",
       trapB: "Laisser le pion e5 étouffer ton roque sans réagir." },
 
-    { id: "kid", roleA: "côté d5-e4, jeu aile dame", roleB: "côté d6-e5, jeu aile roi", name: "Centre bloqué (type Est-Indienne)",
+    { id: "kid", wingA: "q", wingB: "k", roleA: "côté d5-e4, jeu aile dame", roleB: "côté d6-e5, jeu aile roi", name: "Centre bloqué (type Est-Indienne)",
       test: function (A, B) { return on(A, "d5") && on(A, "e4") && on(B, "d6") && on(B, "e5"); },
       desc: "Centre fermé : chaque camp attaque sur l'aile où pointe sa chaîne. C'est une course, le tempo compte plus que tout.",
       planA: "Joue à l'aile dame : c4-c5, b4, ouverture de la colonne c ; infiltre-toi en c7.",
@@ -85,7 +85,7 @@
       trapA: "Te laisser distraire à l'aile roi et perdre la course.",
       trapB: "Prendre en e4 trop tôt (fxe4), ce qui donne la case e4 et relâche la pression." },
 
-    { id: "benoni", roleA: "majorité centrale", roleB: "majorité aile dame", name: "Benoni",
+    { id: "benoni", wingA: "c", wingB: "q", roleA: "majorité centrale", roleB: "majorité aile dame", name: "Benoni",
       test: function (A, B) { return on(A, "d5") && on(A, "c4") && on(B, "c5") && on(B, "d6") && !file(B, "e"); },
       desc: "Majorité centrale pour un camp, majorité à l'aile dame pour l'autre : chacun pousse sa majorité.",
       planA: "Prépare e4-e5 avec ta majorité centrale, bloque l'aile dame (a4) pour freiner b5.",
@@ -93,7 +93,7 @@
       trapA: "Laisser passer b5 sans réaction.",
       trapB: "Laisser la poussée e5 arriver dans de bonnes conditions." },
 
-    { id: "bolesl", roleA: "côté e4, case d5", roleB: "côté d6-e5", name: "Sicilienne Boleslavsky / Najdorf (trou d5)",
+    { id: "bolesl", wingA: "c", wingB: "q", roleA: "côté e4, case d5", roleB: "côté d6-e5", name: "Sicilienne Boleslavsky / Najdorf (trou d5)",
       test: function (A, B) { return on(A, "e4") && !file(A, "d") && on(B, "e5") && on(B, "d6") && !file(B, "c"); },
       desc: "Le camp aux pions d6-e5 a un trou en d5 et un pion arriéré en d6, mais beaucoup de contre-jeu.",
       planA: "Contrôle et occupe d5 : cavalier en d5, échange les pièces adverses qui défendent cette case (cavalier f6, fou e6 ou e7).",
@@ -101,7 +101,7 @@
       trapA: "Laisser l'adversaire réussir d5.",
       trapB: "Échanger le fou qui défend d5 et laisser un cavalier s'y installer." },
 
-    { id: "schev", roleA: "côté e4", roleB: "côté d6-e6", name: "Sicilienne Scheveningen / Hérisson",
+    { id: "schev", wingA: "k", wingB: "q", roleA: "côté e4", roleB: "côté d6-e6", name: "Sicilienne Scheveningen / Hérisson",
       test: function (A, B) { return on(A, "e4") && !file(A, "d") && on(B, "e6") && on(B, "d6") && !file(B, "c"); },
       desc: "Petit centre compact pour un camp, plus d'espace pour l'autre. Structure élastique : tout se joue sur les ruptures.",
       planA: "Attaque à l'aile roi (f4, g4-g5) ou prépare e5 ; garde le contrôle de d5 pour empêcher la rupture d5.",
@@ -109,7 +109,7 @@
       trapA: "Attaquer sans avoir sécurisé ton roi, alors que le contre-jeu adverse arrive vite par la colonne c.",
       trapB: "Rester passif : sans rupture, l'attaque adverse finit par passer." },
 
-    { id: "maroczy", roleA: "avec l'étau", roleB: "contre l'étau", name: "Bind de Maroczy",
+    { id: "maroczy", wingA: null, wingB: null, roleA: "avec l'étau", roleB: "contre l'étau", name: "Bind de Maroczy",
       test: function (A, B) { return on(A, "c4") && on(A, "e4") && !file(A, "d") && !file(B, "c") && file(B, "d"); },
       desc: "Étau sur la case d5 : un camp a beaucoup d'espace, l'autre doit trouver une rupture.",
       planA: "Étouffe : empêche b5 et d5, joue lentement avec ton avantage d'espace.",
@@ -117,7 +117,7 @@
       trapA: "Ouvrir le jeu toi-même et relâcher l'étau.",
       trapB: "Forcer une rupture mal préparée." },
 
-    { id: "stonewall", roleA: "avec le Stonewall", roleB: "contre le Stonewall", name: "Stonewall",
+    { id: "stonewall", wingA: "k", wingB: "c", roleA: "avec le Stonewall", roleB: "contre le Stonewall", name: "Stonewall",
       test: function (A, B) { return on(A, "d4") && on(A, "e3") && on(A, "f4"); },
       desc: "Mur de pions d4-e3-f4 : case e5 forte pour un cavalier, mais trou en e4 et fou de cases claires enfermé.",
       planA: "Installe un cavalier en e5 et attaque à l'aile roi (g4, tour par f3-h3).",
@@ -125,7 +125,7 @@
       trapA: "Attaquer sans le cavalier en e5 ; laisser un cavalier adverse s'installer en e4.",
       trapB: "Laisser l'attaque se développer sans occuper e4." },
 
-    { id: "slow", roleA: "côté e4-d3", roleB: "côté e5-d6", name: "Centre e4-e5 fermé (Espagnole, Italienne lente)",
+    { id: "slow", wingA: null, wingB: null, roleA: "côté e4-d3", roleB: "côté e5-d6", name: "Centre e4-e5 fermé (Espagnole, Italienne lente)",
       test: function (A, B) { return on(A, "e4") && on(A, "d3") && on(B, "e5") && on(B, "d6"); },
       desc: "Centre symétrique et tendu : partie de manœuvres où la qualité du regroupement compte plus que le calcul.",
       planA: "Prépare d4 (c3, puis manœuvre Cbd2-f1-g3), ou joue à l'aile roi avec f4 ; ne bloque pas tes pièces.",
@@ -133,7 +133,7 @@
       trapA: "Jouer d4 avant d'avoir assez de soutien.",
       trapB: "Laisser l'adversaire réussir d4 dans de bonnes conditions." },
 
-    { id: "open", roleA: "", roleB: "", name: "Centre ouvert",
+    { id: "open", wingA: null, wingB: null, roleA: "", roleB: "", name: "Centre ouvert",
       test: function (A, B) { return !file(A, "d") && !file(A, "e") && !file(B, "d") && !file(B, "e"); },
       desc: "Plus de pions centraux : le jeu est dicté par l'activité des pièces et les colonnes ouvertes.",
       planA: "Développe vite, occupe les colonnes d et e avec les tours, mets ton roi à l'abri et vise les pièces mal placées.",
@@ -173,7 +173,7 @@
   function sideOf(st, me) { if (!st) return null; if (st.id === "open") return -1; return st.a === me ? 1 : 0; }
   function planFor(id, side) {
     var d = BYID[id]; if (!d) return null;
-    return { name: d.name, role: side === 0 ? d.roleB : side === 1 ? d.roleA : "", desc: d.desc, plan: side === 0 ? d.planB : d.planA, opp: side === 0 ? d.planA : d.planB, trap: side === 0 ? d.trapB : d.trapA };
+    return { wing: side === 0 ? d.wingB : side === 1 ? d.wingA : null, name: d.name, role: side === 0 ? d.roleB : side === 1 ? d.roleA : "", desc: d.desc, plan: side === 0 ? d.planB : d.planA, opp: side === 0 ? d.planA : d.planB, trap: side === 0 ? d.trapB : d.trapA };
   }
 
   root.Struct = { DEFS: DEFS, BYID: BYID, classify: classify, ofGame: ofGame, sideOf: sideOf, planFor: planFor };
