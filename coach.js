@@ -357,4 +357,4 @@ Réponds en français, en 3 à 6 phrases concrètes. Appuie-toi sur les données
   try{CO.chat[CO.chat.length-1].a=await coLLM(prompt,false)}catch(e){CO.chat[CO.chat.length-1].a="Réponse indisponible : "+(e.message||e)}
   coChat();
 }
-function coChat(){const e=$("#cochat");if(!e)return;e.innerHTML=CO.chat.map(c=>`<div class="coq"><b>Toi :</b> ${esc(c.q)}</div><div class="coa">${c.a==null?'<span class="spin" aria-hidden="true"></span> Le coach réfléchit…':esc(c.a).replace(/\n/g,"<br>")}</div>`).join("")}
+function coChat(){const e=$("#cochat");if(!e)return;e.innerHTML=CO.chat.slice().reverse().map(c=>`<div class="coq"><b>Toi :</b> ${esc(c.q)}</div><div class="coa">${c.a==null?'<span class="spin" aria-hidden="true"></span> Le coach réfléchit…':esc(c.a).replace(/\n/g,"<br>")}</div>`).join("")}
