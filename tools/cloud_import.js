@@ -45,13 +45,21 @@ const git = (...a) => execFileSync("git", ["-C", DIR, ...a], { encoding: "utf8",
 const readJSON = (f, d) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) { return d; } };
 const branch = () => { try { return git("rev-parse", "--abbrev-ref", "HEAD").trim(); } catch (e) { return "main"; } };
 const sleepMs = ms => new Promise(z => setTimeout(z, ms));
-async function commit(msg, mutate) {
+// verrous : plusieurs parties peuvent finir en même temps, git et Stockfish se font un à la fois
+const lock = () => { let p = Promise.resolve(); return fn => { const r = p.then(fn); p = r.catch(() => {}); return r; }; };
+const gitLock = lock(), engLock = lock();
+function commit(msg, mutate) { return gitLock(() => commitNow(msg, mutate)); }
+async function commitNow(msg, mutate) {
   const br = branch();
   for (let k = 0; k < 5; k++) {
     try { git("fetch", "-q", "origin", br); git("reset", "-q", "--hard", "origin/" + br); } catch (e) { /* dépôt sans distant (tests) */ }
     const q = readJSON(QF, { format: "carnet-queue", version: 1, jobs: [] });
     const v = readJSON(VF, { format: "carnet-videos", version: 1, videos: [] });
     if (mutate(q, v) === false) return;
+    // les parties d'une même vidéo restent dans l'ordre, même si elles finissent dans le désordre
+    const pos = [], ent = [];
+    v.videos.forEach((x, i) => { if (x.part && x.vid) { pos.push(i); ent.push(x); } });
+    ent.sort((a, b) => a.vid === b.vid ? a.part.k - b.part.k : 0).forEach((x, j) => { v.videos[pos[j]] = x; });
     fs.writeFileSync(QF, JSON.stringify(q, null, 1) + "\n");
     fs.writeFileSync(VF, JSON.stringify(v, null, 1) + "\n");
     git("add", "queue.json", "videos.json");
@@ -109,6 +117,7 @@ async function runJob(job, E) {
   let vtitle = job.title || "", last = 0;
   const say = t => { console.log("  " + t); };
   const progress = async (t, extra) => { console.log("> " + t); if (Date.now() - last > 20000 || extra) { last = Date.now(); await setJob(job.id, Object.assign({ progress: t }, extra || {}), "File d'analyse : progression"); } };
+  // avec plusieurs parties en même temps, les messages Gemini sont seulement journalisés
 
   let segs = [{ a: job.from ?? null, b: job.to ?? null, white: "", black: "", desc: "" }];
   if (split) {
@@ -121,23 +130,43 @@ async function runJob(job, E) {
   const miss = C.vSegMissing(segs, split ? have : []), n = miss.total, done = [], failed = [];
   if (!miss.segs.length) return { done, failed, n, skipped: miss.skipped };
   await progress(`${n} partie${n > 1 ? "s" : ""} repérée${n > 1 ? "s" : ""}${miss.skipped ? `, ${miss.skipped} déjà importée${miss.skipped > 1 ? "s" : ""}` : ""}.`, { parts: { done: 0, total: miss.segs.length } });
-  for (const g of miss.segs) {
+  // une partie : lecture Gemini, vérification, Stockfish, enregistrement
+  const doPart = async (g, careful) => {
     const k = g.i, label = n > 1 ? `Partie ${k + 1}/${n}${g.white || g.black ? ` (${g.white} – ${g.black})` : ""} · ` : "";
-    try {
-      await progress(label + "lecture par Gemini…");
-      const r = await patient(label + "lecture", () => C.vExtract(cfg, yurl, g.a, g.b, pgn, say, label));
-      const { main, ms } = C.vBuild(r.raw, { pgn });
-      if (!ms.length) throw new Error("aucun moment commenté trouvé");
-      if (!vtitle && r.raw.titre) vtitle = r.raw.titre;
-      const v = C.vEntry({ id, yurl, g, k, n, r, main, ms, pgn, base: vtitle || "Vidéo " + id, form });
-      if (E) { try { await evalVideo(E, v); } catch (e) { say("Stockfish : " + e.message); } }
-      done.push(v);
-      await commit(`Vidéo : ${v.title}`.slice(0, 120), (q, lib) => {
-        lib.videos = lib.videos.filter(x => x.id !== v.id); lib.videos.push(v);
-        const j = q.jobs.find(x => x.id === job.id); if (j) Object.assign(j, { parts: { done: done.length, total: miss.segs.length }, progress: `${label}${ms.length} moments, ${main.sans.length} coups vérifiés.`, updated: Date.now() });
-      });
-      last = Date.now();
-    } catch (e) { failed.push({ k: k + 1, msg: e.message, retry: transient(e) }); console.log("! " + label + e.message); }
+    await progress(label + "lecture par Gemini…");
+    const read = () => C.vExtract(cfg, yurl, g.a, g.b, pgn, say, label);
+    const r = careful ? await patient(label + "lecture", read) : await read();
+    const { main, ms } = C.vBuild(r.raw, { pgn });
+    if (!ms.length) { const e = new Error("aucun moment commenté trouvé"); e.final = true; throw e; }
+    if (!vtitle && r.raw.titre) vtitle = r.raw.titre;
+    const v = C.vEntry({ id, yurl, g, k, n, r, main, ms, pgn, base: vtitle || "Vidéo " + id, form });
+    if (E) { try { await engLock(() => evalVideo(E, v)); } catch (e) { say("Stockfish : " + e.message); } }
+    done.push(v);
+    await commit(`Vidéo : ${v.title}`.slice(0, 120), (q, lib) => {
+      lib.videos = lib.videos.filter(x => x.id !== v.id); lib.videos.push(v);
+      const j = q.jobs.find(x => x.id === job.id); if (j) Object.assign(j, { parts: { done: done.length, total: miss.segs.length }, progress: `${label}${ms.length} moments, ${main.sans.length} coups vérifiés.`, updated: Date.now() });
+    });
+    last = Date.now();
+  };
+  const fail = (g, e) => { failed.push({ k: g.i + 1, msg: e.message, retry: transient(e) }); console.log(`! partie ${g.i + 1} : ${e.message}`); };
+
+  // 1. en parallèle (PARALLEL parties à la fois) tant que Gemini suit ;
+  // 2. à la première saturation, on arrête d'en lancer de nouvelles et on repasse en série, avec les attentes patientes
+  const PAR = Math.max(1, +process.env.CARNET_PARALLEL || 3), pending = miss.segs.slice(), retry = [];
+  let serial = PAR === 1 || pending.length === 1;
+  if (!serial) {
+    const worker = async () => {
+      while (!serial && pending.length) {
+        const g = pending.shift();
+        try { await doPart(g, false); }
+        catch (e) { if (transient(e)) { if (!serial) console.log("! Gemini saturé en parallèle : passage en série"); serial = true; retry.push(g); } else fail(g, e); }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(PAR, pending.length) }, worker));
+    if (serial && (retry.length || pending.length)) await progress(`Gemini saturé en parallèle : lecture une partie à la fois pour les ${retry.length + pending.length} restantes.`, {});
+  }
+  for (const g of retry.concat(pending).sort((a, b) => a.i - b.i)) {
+    try { await doPart(g, true); } catch (e) { fail(g, e); }
   }
   return { done, failed, n, skipped: miss.skipped };
 }
