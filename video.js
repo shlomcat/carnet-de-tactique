@@ -3,13 +3,15 @@
    Gemini regarde la vidéo et renvoie la partie + les commentaires horodatés ;
    chess.js vérifie chaque coup, Stockfish évalue chaque position retenue. */
 "use strict";
-const VID={key:"carnet:gemini",lib:"carnet:videos",cur:null,m:0,cg:null,run:false,vfen:null};
+const VID={key:"carnet:gemini",lib:"carnet:videos",gh:"carnet:github",shared:[],cur:null,m:0,cg:null,run:false,vfen:null};
 const GMODELS=[["gemini-3.8-flash","Gemini 3.8 Flash (recommandé)"],["gemini-4-argon","Gemini 4 Argon (plus fin, plus lent)"],["gemini-3.6-flash","Gemini 3.6 Flash"],["gemini-3.5-flash-lite","Gemini 3.5 Flash-Lite (rapide)"]];
 const START_FEN="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 function vCfg(){return Object.assign({k:"",model:GMODELS[0][0]},store.get(VID.key)||{})}
-function vLib(){return store.get(VID.lib)||[]}
-function vSave(lib){store.set(VID.lib,lib)}
+function vLocal(){return store.get(VID.lib)||[]}
+// bibliothèque = vidéos de ce navigateur + vidéos partagées (fichier videos.json du dépôt)
+function vLib(){const L=vLocal(),ids=new Set(L.map(x=>x.id));return L.concat(VID.shared.filter(x=>!ids.has(x.id)).map(x=>Object.assign(x,{shared:true})))}
+function vSave(lib){store.set(VID.lib,lib.filter(x=>!x.shared));VID.sig=null}
 function ytId(u){const m=String(u||"").match(/(?:youtu\.be\/|v=|\/shorts\/|\/live\/|\/embed\/)([\w-]{11})/);return m?m[1]:null}
 function toSec(s){if(s==null||s==="")return null;if(typeof s==="number")return s;const p=String(s).trim().split(":").map(Number);if(p.some(isNaN))return null;return p.reduce((a,b)=>a*60+b,0)}
 function fmtT(s){s=Math.max(0,Math.round(s||0));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=String(s%60).padStart(2,"0");return h?`${h}:${String(m).padStart(2,"0")}:${x}`:`${m}:${x}`}
@@ -163,7 +165,7 @@ async function vImport(){
       game:{white:raw.partie.blancs||"",black:raw.partie.noirs||"",event:raw.partie.evenement||"",sans:main.sans,given:!!pgn,cut:main.bad?main.bad.san:(pgn?null:raw.cut)},
       moments:ms};
     if($("#vtitle").value.trim())v.title=$("#vtitle").value.trim();
-    const lib=vLib();lib.unshift(v);vSave(lib);
+    const lib=vLocal();lib.unshift(v);vSave(lib);
     say(`${ms.length} moments extraits, ${main.sans.length} coups vérifiés${v.game.cut?` (liste coupée au coup illégal « ${v.game.cut} »)`:""}. Évaluation Stockfish en cours…`);
     VID.cur=v.id;VID.m=0;renderVideo();
     await vEval(v,i=>{const e=$("#vstat");if(e)e.textContent=`Évaluation Stockfish : moment ${i+1}/${v.moments.length}…`});
@@ -215,16 +217,17 @@ function renderVideo(){
     <h3>Bibliothèque · ${lib.length} vidéo${lib.length>1?"s":""}, ${n} exemple${n>1?"s":""}</h3>
     <div style="display:flex;gap:8px"><button class="btn" id="vexp"${lib.length?"":" disabled"}>Exporter</button><label class="btn" for="vimp" style="display:inline-block">Importer un fichier<input type="file" id="vimp" accept="application/json,.json" hidden></label></div>
    </div>
-   ${lib.length?`<ul class="vlist">${lib.map(x=>`<li><button class="vitem" data-v="${esc(x.id)}"><img src="https://i.ytimg.com/vi/${esc(x.vid)}/mqdefault.jpg" alt="" loading="lazy" width="120" height="68"><span><b>${esc(x.title)}</b><br><span class="muted">${esc(x.author||"auteur non renseigné")} · ${x.moments.length} moments · ${x.game.sans.length} coups${x.game.white||x.game.black?` · ${esc(x.game.white)}–${esc(x.game.black)}`:""}</span></span></button></li>`).join("")}</ul>`
+   ${lib.length?`<ul class="vlist">${lib.map(x=>`<li><button class="vitem" data-v="${esc(x.id)}"><img src="https://i.ytimg.com/vi/${esc(x.vid)}/mqdefault.jpg" alt="" loading="lazy" width="120" height="68"><span><b>${esc(x.title)}</b><br><span class="muted">${esc(x.author||"auteur non renseigné")} · ${x.moments.length} moments · ${x.game.sans.length} coups${VID.shared.some(y=>y.id===x.id)?" · <b>partagée</b>":" · sur cet appareil"}${x.game.white||x.game.black?` · ${esc(x.game.white)}–${esc(x.game.black)}`:""}</span></span></button></li>`).join("")}</ul>`
     :`<p class="muted" style="margin:0">Aucune vidéo importée pour l'instant.</p>`}
-  </div>`;
+  </div>
+  ${ghPanelHTML(lib)}`;
   const kv=()=>({k:$("#vkey").value.trim(),model:$("#vmodel").value});
   $("#vksave").onclick=()=>{store.set(VID.key,kv());renderVideo()};
   $("#vmodel").onchange=()=>store.set(VID.key,Object.assign(vCfg(),{model:$("#vmodel").value}));
   if($("#vkdel"))$("#vkdel").onclick=()=>{try{localStorage.removeItem(VID.key)}catch(e){}renderVideo()};
   $("#vgo").onclick=()=>{if($("#vkey").value.trim()&&$("#vkey").value.trim()!==vCfg().k)store.set(VID.key,kv());vImport()};
   box.querySelectorAll("[data-v]").forEach(b=>b.onclick=()=>{VID.cur=b.dataset.v;VID.m=0;renderVideo()});
-  $("#vexp").onclick=vExport;
+  $("#vexp").onclick=vExport;ghBind();
   $("#vimp").onchange=e=>{const f=e.target.files[0];if(!f)return;f.text().then(t=>{const d=JSON.parse(t),arr=Array.isArray(d)?d:d.videos||[];const lib=vLib(),ids=new Set(lib.map(x=>x.id));
     arr.filter(x=>x&&x.id&&x.moments&&!ids.has(x.id)).forEach(x=>lib.push(x));vSave(lib);renderVideo()}).catch(()=>alert("Fichier illisible"))};
 }
@@ -246,7 +249,7 @@ function vViewer(v){
      <div class="rvnav"><button class="btn" id="vprev" aria-label="Moment précédent">◀</button><span class="mono muted" id="vpos"></span><button class="btn" id="vnext" aria-label="Moment suivant">▶</button><button class="btn" id="vflip" title="Retourner l'échiquier">⇅</button></div></div>
     <div class="vright"><div id="vmom" class="rcomment"></div>
      <ol class="vmoms" id="vmoms">${v.moments.map((m,k)=>`<li><button data-m="${k}"><span class="mono">${m.t}</span> ${esc(m.idea||m.comment.slice(0,60))}</button></li>`).join("")}</ol>
-     <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="veval">Évaluer avec Stockfish</button><button class="btn" id="vdel">Supprimer la vidéo</button></div>
+     <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="veval">Évaluer avec Stockfish</button>${VID.shared.some(y=>y.id===v.id)?`<span class="muted" style="font-size:.8rem;align-self:center">Vidéo partagée dans le dépôt GitHub</span>`:`<button class="btn" id="vdel">Supprimer la vidéo</button>`}</div>
     </div>
    </div></div>`;
   VID.cg=Chessground($("#vboard"),{fen:START_FEN,coordinates:true,viewOnly:true,animation:{enabled:true,duration:140},drawable:{enabled:true,visible:true}});
@@ -254,7 +257,7 @@ function vViewer(v){
   $("#vprev").onclick=()=>vShowMoment(VID.m-1);$("#vnext").onclick=()=>vShowMoment(VID.m+1);
   $("#vflip").onclick=()=>VID.cg&&VID.cg.toggleOrientation();
   $("#vmoms").onclick=e=>{const b=e.target.closest("[data-m]");if(b)vShowMoment(+b.dataset.m)};
-  $("#vdel").onclick=()=>{if(!confirm("Supprimer cette vidéo et ses exemples ?"))return;vSave(vLib().filter(x=>x.id!==v.id));VID.cur=null;renderVideo()};
+  if($("#vdel"))$("#vdel").onclick=()=>{if(!confirm("Supprimer cette vidéo et ses exemples ?"))return;vSave(vLib().filter(x=>x.id!==v.id));VID.cur=null;renderVideo()};
   $("#veval").onclick=async()=>{const b=$("#veval");b.disabled=true;const st=$("#vstat");st.hidden=false;st.className="vstat";
     try{await vEval(v,i=>st.textContent=`Évaluation Stockfish : moment ${i+1}/${v.moments.length}…`);vSave(vLib().map(x=>x.id===v.id?v:x));st.textContent="Évaluations à jour.";vShowMoment(VID.m)}
     catch(e){st.className="vstat err";st.textContent="Moteur : "+e.message}finally{b.disabled=false}};
@@ -284,3 +287,107 @@ async function vPlayVar(m,j){
 }
 // exemples à plat, pour la recherche d'exemples similaires plus tard
 function videoExamples(){return vLib().flatMap(v=>v.moments.filter(m=>m.fen&&m.comment).map(m=>({fen:m.fen,comment:m.comment,idea:m.idea,vars:m.vars.map(x=>x.sans.join(" ")),ev:m.ev,src:`${v.author||"?"} — ${v.title} (${m.t}) ${v.url}&t=${m.sec}s`})))}
+
+/* ---------- bibliothèque partagée : videos.json dans le dépôt GitHub ---------- */
+function ghCfg(){return Object.assign({t:"",repo:"shlomcat/carnet-de-tactique"},store.get(VID.gh)||{})}
+function ghPanelHTML(lib){
+  const g=ghCfg(),loc=vLocal().filter(x=>!VID.shared.some(y=>y.id===x.id)).length;
+  return `<div class="panel" style="margin-top:16px">
+   <h3>Partager la bibliothèque sur tous tes appareils</h3>
+   <p class="muted" style="margin:0;font-size:.86rem;max-width:72ch">Les vidéos importées ici restent dans ce navigateur. Pour les retrouver sur ton téléphone, ton ordinateur et dans la version Claude du carnet, publie-les dans le fichier <span class="mono">videos.json</span> du dépôt GitHub (le site se met à jour en une minute environ). ${VID.shared.length} vidéo${VID.shared.length>1?"s":""} déjà partagée${VID.shared.length>1?"s":""}, ${loc} seulement sur cet appareil.</p>
+   <div class="vrow">
+    <div class="fld"><label for="ghrepo">Dépôt</label><input id="ghrepo" value="${esc(g.repo)}" autocomplete="off" spellcheck="false" class="mono"></div>
+    <div class="fld"><label for="ghtok">Jeton GitHub <small class="muted">(droit « Contents » sur ce dépôt)</small></label><input id="ghtok" type="password" value="${esc(g.t)}" autocomplete="off" spellcheck="false" placeholder="github_pat_…"></div>
+   </div>
+   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn primary" id="ghpub"${loc?"":" disabled"}>Publier ${loc||""} vidéo${loc>1?"s":""} dans le dépôt</button>${g.t?`<button class="btn" id="ghdel">Oublier le jeton</button>`:""}<span id="ghstat" class="muted" style="font-size:.85rem"></span></div>
+   <p class="muted" style="margin:0;font-size:.78rem">Jeton à créer sur <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com › Settings › Fine-grained tokens</a> : accès au seul dépôt du carnet, permission « Contents : Read and write ». Il est gardé uniquement dans ce navigateur. Sans jeton : exporte le fichier et envoie-le à Claude, ou dépose-le sous le nom <span class="mono">videos.json</span> dans le dépôt (Add file › Upload files).</p>
+  </div>`;
+}
+function ghBind(){
+  const save=()=>store.set(VID.gh,{t:$("#ghtok").value.trim(),repo:$("#ghrepo").value.trim()});
+  $("#ghtok").onchange=save;$("#ghrepo").onchange=save;
+  if($("#ghdel"))$("#ghdel").onclick=()=>{store.set(VID.gh,{t:"",repo:ghCfg().repo});renderVideo()};
+  $("#ghpub").onclick=async()=>{save();const st=$("#ghstat"),b=$("#ghpub");b.disabled=true;st.textContent="Publication…";
+    try{const n=await ghPublish();st.textContent=`Publié : ${n} vidéos dans le dépôt. Le site sera à jour dans une minute environ.`;setTimeout(renderVideo,1500)}
+    catch(e){st.textContent="Échec : "+e.message;b.disabled=false}};
+}
+const b64=str=>btoa(unescape(encodeURIComponent(str)));
+const unb64=str=>decodeURIComponent(escape(atob(String(str).replace(/\s/g,""))));
+async function ghPublish(){
+  const g=ghCfg();if(!g.t)throw new Error("ajoute un jeton GitHub");if(!/^[\w.-]+\/[\w.-]+$/.test(g.repo))throw new Error("dépôt invalide");
+  const api=`https://api.github.com/repos/${g.repo}/contents/videos.json`,H={Authorization:"Bearer "+g.t,Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"};
+  let sha=null,remote=[];
+  const r0=await fetch(api+"?ref=main",{headers:H,cache:"no-store"});
+  if(r0.ok){const j=await r0.json();sha=j.sha;try{remote=(JSON.parse(unb64(j.content)).videos)||[]}catch(e){throw new Error("le fichier videos.json du dépôt est illisible ; rien n'a été modifié")}}
+  else if(r0.status!==404){throw new Error(r0.status===401?"jeton refusé":r0.status===403?"jeton sans accès à ce dépôt":"GitHub "+r0.status)}
+  const ids=new Set(remote.map(x=>x.id)),add=vLocal().filter(x=>!ids.has(x.id)).map(x=>{const y=Object.assign({},x);delete y.shared;return y});
+  const all=remote.concat(add);
+  const body={message:`Bibliothèque vidéos : ${all.length} vidéo${all.length>1?"s":""} (+${add.length})`,content:b64(JSON.stringify({format:"carnet-videos",version:1,videos:all},null,1)),branch:"main"};
+  if(sha)body.sha=sha;
+  const r=await fetch(api,{method:"PUT",headers:Object.assign({"Content-Type":"application/json"},H),body:JSON.stringify(body)});
+  if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error((j.message||"GitHub "+r.status)+(r.status===409?" (réessaie)":""))}
+  VID.shared=all;VID.sig=null;return all.length;
+}
+function vLoadShared(){
+  return fetch("videos.json",{cache:"no-cache"}).then(r=>r.ok?r.json():null).then(d=>{
+    VID.shared=(d&&Array.isArray(d.videos)?d.videos:[]);VID.sig=null;
+    const p=document.getElementById("p-video");if(p&&!p.hidden&&!VID.run&&typeof renderVideo==="function")renderVideo();
+    if(typeof RV!=="undefined"&&RV.g&&typeof revGo==="function"&&RV.ply)revGo(RV.ply);
+  }).catch(()=>{});
+}
+
+/* ---------- exemples similaires : comparaison de positions ---------- */
+const PV={p:1,n:3,b:3,r:5,q:9};
+function vSig(fen){
+  const rows=fen.split(" ")[0].split("/"),pw=new Set(),mat={w:{},b:{}};let nonPawn=0;
+  rows.forEach((row,ri)=>{let f=0;for(const ch of row){if(/\d/.test(ch)){f+=+ch;continue}
+    const c=ch===ch.toUpperCase()?"w":"b",t=ch.toLowerCase(),sq="abcdefgh"[f]+(8-ri);
+    if(t==="p")pw.add(c+sq);if(t!=="k"){mat[c][t]=(mat[c][t]||0)+1;if(t!=="p")nonPawn+=PV[t]}f++}});
+  let st=null;try{st=window.Struct?Struct.classify(fen):null}catch(e){}
+  return {pw,mat,np:nonPawn,st:st&&st.id,sta:st&&st.a,stm:fen.split(" ")[1]};
+}
+// la même position vue par l'autre camp (couleurs et rangées inversées)
+function vMirror(fen){
+  const [pl,stm,cas,ep,...rest]=fen.split(" ");
+  const p=pl.split("/").reverse().map(r=>[...r].map(ch=>/[a-z]/.test(ch)?ch.toUpperCase():/[A-Z]/.test(ch)?ch.toLowerCase():ch).join("")).join("/");
+  const c=cas==="-"?"-":((cas.includes("k")?"K":"")+(cas.includes("q")?"Q":"")+(cas.includes("K")?"k":"")+(cas.includes("Q")?"q":""));
+  const e=ep==="-"?"-":ep[0]+(9-+ep[1]);
+  return [p,stm==="w"?"b":"w",c,e,...rest].join(" ");
+}
+function vSim(A,B){
+  let inter=0;A.pw.forEach(x=>{if(B.pw.has(x))inter++});const uni=A.pw.size+B.pw.size-inter;
+  const pawn=uni?inter/uni:1;
+  let md=0,mt=0;for(const c of ["w","b"])for(const t of ["p","n","b","r","q"]){const a=A.mat[c][t]||0,b=B.mat[c][t]||0;md+=Math.abs(a-b)*PV[t];mt+=Math.max(a,b)*PV[t]}
+  const mat=mt?1-md/mt:1,phase=1-Math.min(1,Math.abs(A.np-B.np)/40);
+  const ka=A.st&&A.st!=="open",kb=B.st&&B.st!=="open";
+  // structure reconnue des deux côtés : même structure ou pas ; sinon on se fie aux pions seuls
+  const st=ka&&kb?(A.st===B.st&&A.sta===B.sta?1:0):ka||kb?0:pawn;
+  return 0.55*pawn+0.15*mat+0.1*phase+0.2*st;
+}
+function vExampleSigs(){
+  if(VID.sig)return VID.sig;
+  VID.sig=[];
+  vLib().forEach(v=>v.moments.forEach((m,k)=>{if(!m.fen||!m.comment)return;try{VID.sig.push({v,m,k,s:vSig(m.fen)})}catch(e){}}));
+  return VID.sig;
+}
+// les n exemples de la bibliothèque les plus proches d'une position
+function videoSimilar(fen,n,min){
+  const ex=vExampleSigs();if(!ex.length||!fen)return [];
+  const A=vSig(fen),M=vSig(vMirror(fen)),out=[];
+  for(const e of ex){const a=vSim(A,e.s),b=vSim(M,e.s);const sc=Math.max(a,b);if(sc>=(min||0.75))out.push({sc,flip:b>a,...e})}
+  out.sort((x,y)=>y.sc-x.sc);
+  const seen=new Set();return out.filter(x=>{const k=x.v.id+":"+x.k;if(seen.has(k))return false;seen.add(k);return true}).slice(0,n||3);
+}
+function vSrc(x){return `${x.v.author||"auteur non renseigné"}, « ${x.v.title} », ${x.m.t}`}
+function videoSimilarHTML(fen){
+  const L=videoSimilar(fen,2);if(!L.length)return "";
+  return `<div class="stbox vsim"><b>Vu dans une vidéo</b>${L.map(x=>`<div><span class="muted mono" style="font-size:.78rem">ressemblance ${Math.round(x.sc*100)} %${x.flip?" · couleurs inversées":""}${x.s.st&&window.Struct&&Struct.BYID&&Struct.BYID[x.s.st]?" · "+esc(Struct.BYID[x.s.st].name):""}</span><br>${x.m.idea?`<b>${esc(x.m.idea)}</b> — `:""}${esc(x.m.comment)}<br><span style="font-size:.82rem"><a href="${esc(x.v.url)}&t=${x.m.sec}s" target="_blank" rel="noopener">▶ ${esc(vSrc(x))}</a> · <button class="lm" onclick="videoOpen('${esc(x.v.id)}',${x.k})">voir la position</button></span></div>`).join("")}</div>`;
+}
+function videoOpen(id,k){VID.cur=id;VID.m=k;if(typeof tab==="function")tab("video");renderVideo()}
+// texte transmis à Claude
+function videoContext(fen){
+  const L=videoSimilar(fen,3);if(!L.length)return "";
+  return "Exemples tirés de vidéos pédagogiques, dans des positions semblables (repérées automatiquement par la structure de pions et le matériel ; sers-t'en seulement s'ils éclairent vraiment la position, et cite alors la source entre parenthèses) :\n"+
+   L.map(x=>`- ressemblance ${Math.round(x.sc*100)} %${x.flip?" (couleurs inversées : l'exemple concerne l'autre camp)":""} ; position de l'exemple (FEN) : ${x.m.fen}${x.m.idea?` ; thème : ${x.m.idea}`:""} ; explication du commentateur : ${x.m.comment}${x.m.vars.length?` ; variantes citées : ${x.m.vars.map(v=>v.sans.join(" ")+(v.verdict?" ("+v.verdict+")":"")).join(" ; ")}`:""} ; source : ${vSrc(x)}`).join("\n")+"\n";
+}
+vLoadShared();
