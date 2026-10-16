@@ -3,7 +3,7 @@
    Gemini regarde la vidéo et renvoie la partie + les commentaires horodatés ;
    chess.js vérifie chaque coup, Stockfish évalue chaque position retenue. */
 "use strict";
-const VID={key:"carnet:gemini",lib:"carnet:videos",gh:"carnet:github",shared:[],priv:[],cur:null,m:0,cg:null,run:false,vfen:null};
+const VID={key:"carnet:gemini",lib:"carnet:videos",gh:"carnet:github",shared:[],priv:[],dbv:[],dbh:null,cur:null,m:0,cg:null,run:false,vfen:null};
 const GMODELS=[["gemini-3.8-flash","Gemini 3.8 Flash (recommandé)"],["gemini-4-argon","Gemini 4 Argon (plus fin, plus lent)"],["gemini-3.6-flash","Gemini 3.6 Flash"],["gemini-3.5-flash-lite","Gemini 3.5 Flash-Lite (rapide)"]];
 const START_FEN="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
@@ -12,11 +12,11 @@ function vLocal(){return store.get(VID.lib)||[]}
 // bibliothèque = vidéos de ce navigateur + vidéos partagées (fichier videos.json du dépôt)
 // bibliothèque = vidéos de ce navigateur + dépôt privé de données + fichier public du site
 function vLib(){const L=vLocal(),ids=new Set(L.map(x=>x.id)),out=L.slice();
-  for(const [src,f] of [[VID.priv,"remote"],[VID.shared,"remote"]])for(const x of src)if(!ids.has(x.id)){ids.add(x.id);out.push(Object.assign(x,{[f]:true}))}
+  for(const [src,f] of [[VID.dbv,"remote"],[VID.priv,"remote"],[VID.shared,"remote"]])for(const x of src)if(!ids.has(x.id)){ids.add(x.id);out.push(Object.assign(x,{[f]:true}))}
   return out}
 const isPerso=x=>x&&x.license==="perso";
 const LIC={"CC BY":"licence CC BY",accord:"accord de l'auteur",perso:"usage personnel"};
-function vWhere(x){const w=[];if(VID.shared.some(y=>y.id===x.id))w.push("publique");if(VID.priv.some(y=>y.id===x.id))w.push("dépôt privé");if(vLocal().some(y=>y.id===x.id)&&!w.length)w.push("sur cet appareil");return w.join(" + ")}
+function vWhere(x){const w=[];if(VID.dbv.some(y=>y.id===x.id))w.push("base Claude");if(VID.shared.some(y=>y.id===x.id))w.push("publique");if(VID.priv.some(y=>y.id===x.id))w.push("dépôt privé");if(vLocal().some(y=>y.id===x.id)&&!w.length)w.push("sur cet appareil");return w.join(" + ")}
 function vSave(lib){store.set(VID.lib,lib.filter(x=>!x.remote));VID.sig=null}
 function ytId(u){const m=String(u||"").match(/(?:youtu\.be\/|v=|\/shorts\/|\/live\/|\/embed\/)([\w-]{11})/);return m?m[1]:null}
 function toSec(s){if(s==null||s==="")return null;if(typeof s==="number")return s;const p=String(s).trim().split(":").map(Number);if(p.some(isNaN))return null;return p.reduce((a,b)=>a*60+b,0)}
@@ -264,13 +264,16 @@ function renderVideo(){
   </div>
   <div class="panel" style="margin-top:16px">
    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between">
-    <h3>Bibliothèque · ${lib.length} vidéo${lib.length>1?"s":""}, ${n} exemple${n>1?"s":""}</h3>
-    <div style="display:flex;gap:8px"><button class="btn" id="vexp"${lib.length?"":" disabled"}>Exporter</button><label class="btn" for="vimp" style="display:inline-block">Importer un fichier<input type="file" id="vimp" accept="application/json,.json" hidden></label></div>
+    <h3>Bibliothèque · ${lib.length} vidéo${lib.length>1?"s":""}, ${n} exemple${n>1?"s":""}${VID.dbh?` · base Claude : ${VID.dbv.length}`:""}</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">${VID.dbh&&vLocal().some(x=>!VID.dbv.some(y=>y.id===x.id))?`<button class="btn primary" id="vtodb">Copier dans la base Claude</button>`:""}<button class="btn" id="vexp"${lib.length?"":" disabled"}>Exporter</button><label class="btn" for="vimp" style="display:inline-block">Importer un fichier<input type="file" id="vimp" accept="application/json,.json" hidden></label></div>
    </div>
    ${lib.length?`<ul class="vlist">${lib.map(x=>`<li><button class="vitem" data-v="${esc(x.id)}"><img src="https://i.ytimg.com/vi/${esc(x.vid)}/mqdefault.jpg" alt="" loading="lazy" width="120" height="68"><span><b>${esc(x.title)}</b><br><span class="muted">${esc(x.author||"auteur non renseigné")} · ${x.moments.length} moment${x.moments.length>1?"s":""} · ${x.game.sans.length} coup${x.game.sans.length>1?"s":""} · ${esc(LIC[x.license]||x.license||"")} · <b>${esc(vWhere(x))}</b>${x.game.white||x.game.black?` · ${esc(x.game.white)}–${esc(x.game.black)}`:""}</span></span></button></li>`).join("")}</ul>`
     :`<p class="muted" style="margin:0">Aucune vidéo importée pour l'instant.</p>`}
   </div>
   ${ghPanelHTML(lib)}`;
+  // version Claude : pas d'accès à Gemini ni à GitHub, la bibliothèque vit dans la base de la page
+  if(window.claude){box.querySelector(".vgrid").hidden=true;$("#ghpanel").hidden=true;
+    box.insertAdjacentHTML("afterbegin",`<div class="panel"><h3>Vidéos dans la version Claude</h3><p class="muted" style="margin:0;font-size:.88rem;max-width:74ch">L'extraction d'une vidéo par Gemini se fait sur le site <a href="https://shlomcat.github.io/carnet-de-tactique/" target="_blank" rel="noopener">shlomcat.github.io/carnet-de-tactique</a>. Ensuite, clique là-bas sur « Exporter », puis ici sur « Importer un fichier » : les vidéos sont enregistrées dans la base de cette page et disponibles sur tous tes appareils. ${VID.dbh?"":"<b>La base n'est pas disponible pour le moment : les vidéos importées resteront dans ce navigateur.</b>"}</p></div>`)}
   const kv=()=>({k:$("#vkey").value.trim(),model:$("#vmodel").value});
   $("#vksave").onclick=()=>{store.set(VID.key,kv());renderVideo()};
   $("#vmodel").onchange=()=>store.set(VID.key,Object.assign(vCfg(),{model:$("#vmodel").value}));
@@ -279,8 +282,13 @@ function renderVideo(){
   box.querySelectorAll("[data-v]").forEach(b=>b.onclick=()=>{VID.cur=b.dataset.v;VID.m=0;renderVideo()});
   $("#vexp").onclick=vExport;ghBind();
   $("#vlic").onchange=()=>{const p=$("#vlic").value==="perso";$("#vokl").hidden=p;$("#vpersol").hidden=!p};
-  $("#vimp").onchange=e=>{const f=e.target.files[0];if(!f)return;f.text().then(t=>{const d=JSON.parse(t),arr=Array.isArray(d)?d:d.videos||[];const lib=vLib(),ids=new Set(lib.map(x=>x.id));
-    arr.filter(x=>x&&x.id&&x.moments&&!ids.has(x.id)).forEach(x=>lib.push(x));vSave(lib);renderVideo()}).catch(()=>alert("Fichier illisible"))};
+  $("#vimp").onchange=e=>{const f=e.target.files[0];if(!f)return;f.text().then(async t=>{const d=JSON.parse(t),arr=(Array.isArray(d)?d:d.videos||[]).filter(x=>x&&x.id&&Array.isArray(x.moments));
+    if(VID.dbh){const have=new Set(VID.dbv.map(x=>x.id));let n=0,err=null;for(const x of arr){if(have.has(x.id))continue;try{await vDbPut(x);n++}catch(e){err=e}}
+      alert(`${n} vidéo${n>1?"s":""} enregistrée${n>1?"s":""} dans la base de la version Claude${err?` (erreur : ${err.message||err})`:""}.`)}
+    else{const lib=vLocal(),ids=new Set(vLib().map(x=>x.id));arr.filter(x=>!ids.has(x.id)).forEach(x=>{delete x.remote;lib.push(x)});vSave(lib)}
+    renderVideo()}).catch(()=>alert("Fichier illisible"))};
+  if($("#vtodb"))$("#vtodb").onclick=async()=>{const have=new Set(VID.dbv.map(x=>x.id)),L=vLocal().filter(x=>!have.has(x.id));let n=0;
+    for(const x of L){try{await vDbPut(x);n++}catch(e){alert("Erreur : "+(e.message||e));break}}if(n)alert(`${n} vidéo${n>1?"s":""} copiée${n>1?"s":""} dans la base de la version Claude.`);renderVideo()};
 }
 function vExport(){
   const blob=new Blob([JSON.stringify({format:"carnet-videos",version:1,videos:vLib()},null,1)],{type:"application/json"});
@@ -300,7 +308,7 @@ function vViewer(v){
      <div class="rvnav"><button class="btn" id="vprev" aria-label="Moment précédent">◀</button><span class="mono muted" id="vpos"></span><button class="btn" id="vnext" aria-label="Moment suivant">▶</button><button class="btn" id="vflip" title="Retourner l'échiquier">⇅</button></div></div>
     <div class="vright"><div id="vmom" class="rcomment"></div>
      <ol class="vmoms" id="vmoms">${v.moments.map((m,k)=>`<li><button data-m="${k}"><span class="mono">${m.t}</span> ${esc(m.idea||m.comment.slice(0,60))}</button></li>`).join("")}</ol>
-     <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="veval">Évaluer avec Stockfish</button>${v.remote?`<span class="muted" style="font-size:.8rem;align-self:center">Vidéo enregistrée dans un dépôt GitHub (${esc(vWhere(v))})</span>`:`<button class="btn" id="vdel">Supprimer la vidéo</button>`}</div>
+     <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="veval">Évaluer avec Stockfish</button>${v.remote&&!VID.dbv.some(y=>y.id===v.id)?`<span class="muted" style="font-size:.8rem;align-self:center">Vidéo enregistrée dans un dépôt GitHub (${esc(vWhere(v))})</span>`:`<button class="btn" id="vdel">Supprimer la vidéo</button>`}</div>
     </div>
    </div></div>`;
   VID.cg=Chessground($("#vboard"),{fen:START_FEN,coordinates:true,viewOnly:true,animation:{enabled:true,duration:140},drawable:{enabled:true,visible:true}});
@@ -309,9 +317,10 @@ function vViewer(v){
   $("#vprev").onclick=()=>vShowMoment(VID.m-1);$("#vnext").onclick=()=>vShowMoment(VID.m+1);
   $("#vflip").onclick=()=>VID.cg&&VID.cg.toggleOrientation();
   $("#vmoms").onclick=e=>{const b=e.target.closest("[data-m]");if(b)vShowMoment(+b.dataset.m)};
-  if($("#vdel"))$("#vdel").onclick=()=>{if(!confirm("Supprimer cette vidéo et ses exemples ?"))return;vSave(vLib().filter(x=>x.id!==v.id));VID.cur=null;renderVideo()};
+  if($("#vdel"))$("#vdel").onclick=async()=>{if(!confirm("Supprimer cette vidéo et ses exemples ?"))return;vSave(vLocal().filter(x=>x.id!==v.id));
+    if(VID.dbh&&VID.dbv.some(y=>y.id===v.id)){try{await VID.dbh.doc("videos/"+vDocId(v.id)).delete()}catch(e){alert("Suppression impossible : "+(e.message||e))}}VID.cur=null;renderVideo()};
   $("#veval").onclick=async()=>{const b=$("#veval");b.disabled=true;const st=$("#vstat");st.hidden=false;st.className="vstat";
-    try{await vEval(v,i=>st.textContent=`Évaluation Stockfish : moment ${i+1}/${v.moments.length}…`);vSave(vLib().map(x=>x.id===v.id?v:x));st.textContent="Évaluations à jour.";vShowMoment(VID.m)}
+    try{await vEval(v,i=>st.textContent=`Évaluation Stockfish : moment ${i+1}/${v.moments.length}…`);vPersist(v);st.textContent="Évaluations à jour.";vShowMoment(VID.m)}
     catch(e){st.className="vstat err";st.textContent="Moteur : "+e.message}finally{b.disabled=false}};
   if(v.moments.every(m=>m.ev!=null))$("#veval").hidden=true;
   vShowMoment(VID.m||0);
@@ -348,7 +357,7 @@ function ghCounts(){
 }
 function ghPanelHTML(){
   const g=ghCfg(),n=ghCounts();
-  return `<div class="panel" style="margin-top:16px">
+  return `<div class="panel" id="ghpanel" style="margin-top:16px">
    <h3>Retrouver la bibliothèque sur tous tes appareils</h3>
    <p class="muted" style="margin:0;font-size:.86rem;max-width:74ch">Les vidéos importées restent d'abord dans ce navigateur. Deux façons de les synchroniser :</p>
    <div class="fld"><label for="ghtok">Jeton GitHub <small class="muted">(permission « Contents : Read and write » sur les dépôts ci-dessous)</small></label><input id="ghtok" style="width:100%;box-sizing:border-box" type="password" value="${esc(g.t)}" autocomplete="off" spellcheck="false" placeholder="github_pat_…"></div>
@@ -509,3 +518,26 @@ async function vContinue(id){
   }catch(e){say("Échec : "+e.message,1)}
   finally{VID.run=false;const b2=$("#vcont");if(b2)b2.disabled=false}
 }
+
+/* ---------- base de données de la version Claude (capacité db de la page) ---------- */
+const vDocId=id=>String(id).replace(/[^A-Za-z0-9_\-.~:@+]/g,"_").slice(0,180);
+function vClean(v){const y=JSON.parse(JSON.stringify(v));delete y.remote;return y}
+async function vDbPut(v){
+  if(!VID.dbh)throw new Error("base indisponible");const y=vClean(v),n=JSON.stringify(y).length;
+  if(n>250000)throw new Error(`« ${v.title} » est trop volumineuse pour la base (${Math.round(n/1024)} Ko)`);
+  await VID.dbh.doc("videos/"+vDocId(v.id)).set(y);
+  if(!VID.dbv.some(x=>x.id===v.id))VID.dbv.push(y);VID.sig=null;
+}
+// enregistre une vidéo là où elle se trouve : cet appareil ou la base Claude
+function vPersist(v){
+  if(vLocal().some(x=>x.id===v.id))vSave(vLocal().map(x=>x.id===v.id?v:x));
+  else if(VID.dbh&&VID.dbv.some(x=>x.id===v.id))vDbPut(v).catch(e=>console.warn(e));
+}
+function vInitDb(){
+  if(VID.dbTried||!(window.claude&&typeof claude.use==="function"))return;VID.dbTried=true;
+  claude.use("db").then(db=>{if(!db)return;VID.dbh=db;
+    db.collection("videos").onSnapshot(snap=>{VID.dbv=snap.docs.map(d=>d.data()).filter(x=>x&&x.id&&Array.isArray(x.moments));vRefresh()},e=>console.warn("base Claude :",e&&e.message));
+    vRefresh();
+  }).catch(()=>{});
+}
+vInitDb();document.addEventListener("DOMContentLoaded",vInitDb);setTimeout(vInitDb,1500);
