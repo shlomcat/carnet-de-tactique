@@ -49,6 +49,7 @@ function vPrompt(o){
    "   - variantes : les suites que le commentateur montre ou cite à partir de cette position, en SAN anglaise, avec son verdict en quelques mots.",
    "Ne note que ce qui est réellement dit ou montré dans la vidéo. N'invente aucun coup.",
    o.prev&&o.prev.length?`Coups déjà joués avant ce passage (à continuer, ne pas répéter) : ${o.prev.join(" ")}.`:"",
+   o.cont?`Les coups ci-dessus sont vérifiés. La position atteinte est (FEN) : ${o.cont.fen}. Le prochain coup est le coup ${o.cont.next}. Dans partie.coups, donne UNIQUEMENT les coups qui suivent cette position, dans l'ordre, en vérifiant sur l'échiquier de la vidéo que chacun est possible. Dans moments, ne donne que les passages commentés à partir de cette position.`:"",
    o.pgn?`La partie est connue, utilise cette liste de coups comme référence et concentre-toi sur les commentaires : ${o.pgn.join(" ")}.`:"",
    o.from!=null?`Ne traite que le passage de ${fmtT(o.from)} à ${fmtT(o.to)} ; les horodatages restent ceux de la vidéo complète.`:""
   ].filter(Boolean).join("\n");
@@ -97,13 +98,26 @@ function vParseJSON(t){
 
 /* ---------- vérification avec chess.js ---------- */
 const cleanSan=s=>String(s||"").replace(/^\s*\d+\s*\.+\s*/,"").replace(/[!?]+$/,"").replace(/0-0-0/g,"O-O-O").replace(/0-0/g,"O-O").trim();
-function replay(fen,sans){
-  const c=new Chess(fen),ok=[],fens=[c.fen()],ucis=[];let bad=null;
-  for(const s0 of sans||[]){const s=cleanSan(s0);if(!s||/^(1-0|0-1|1\/2-1\/2|\*)$/.test(s))continue;
-    const m=c.move(s,{sloppy:true});if(!m){bad={i:ok.length,san:s0};break}
-    ok.push(m.san);ucis.push(m.from+m.to+(m.promotion||""));fens.push(c.fen())}
-  return {sans:ok,fens,ucis,bad};
+// coup mal noté par Gemini (« Nfxe4 » alors que c'est le cavalier d2) : on cherche le seul coup légal
+// de la même pièce vers la même case
+function repairMove(c,s){
+  const m=String(s).replace(/[+#!?]/g,"").match(/^([KQRBN])?([a-h])?([1-8])?x?-?([a-h][1-8])(?:=?([QRBNqrbn]))?$/);
+  if(!m)return null;
+  const piece=m[1]?m[1].toLowerCase():"p",promo=m[5]?m[5].toLowerCase():null;
+  let L=c.moves({verbose:true}).filter(x=>x.to===m[4]&&x.piece===piece&&(!promo||x.promotion===promo)&&(promo||!x.promotion||x.promotion==="q"));
+  if(L.length>1&&m[2])L=L.filter(x=>x.from[0]===m[2]);
+  if(L.length>1&&m[3])L=L.filter(x=>x.from[1]===m[3]);
+  return L.length===1?c.move(L[0]):null;
 }
+function replay(fen,sans){
+  const c=new Chess(fen),ok=[],fens=[c.fen()],ucis=[];let bad=null,fixed=0;
+  for(const s0 of sans||[]){const s=cleanSan(s0);if(!s||/^(1-0|0-1|1\/2-1\/2|\*)$/.test(s))continue;
+    let m=c.move(s,{sloppy:true});if(!m){m=repairMove(c,s);if(m)fixed++}
+    if(!m){bad={i:ok.length,san:s0};break}
+    ok.push(m.san);ucis.push(m.from+m.to+(m.promotion||""));fens.push(c.fen())}
+  return {sans:ok,fens,ucis,bad,fixed};
+}
+const plyName=(n,san)=>n>0?`${Math.ceil(n/2)}${n%2?".":"..."} ${san||""}`.trim():"le début";
 function pgnMoves(txt){
   if(!txt||!txt.trim())return null;
   const c=new Chess();if(c.load_pgn(txt,{sloppy:true}))return c.history();
@@ -123,17 +137,27 @@ function vBuild(raw,o){
   const own=o.pgn&&o.pgn.length?o.pgn:null;
   const main=replay(START_FEN,own||(raw.partie&&raw.partie.coups)||[]);
   const ms=[];
-  for(const x of raw.moments||[]){
-    const sec=toSec(x.t);if(sec==null)continue;
-    let fen=null,ply=null,warn=[];
-    if(x.fen){const c=new Chess();if(c.load(String(x.fen).trim()))fen=c.fen();else warn.push("FEN illisible")}
-    if(!fen){const p=plyOf(x.coup,main.sans);
-      if(p>=0){ply=p;fen=main.fens[p]}else{ply=Math.min(-p,main.sans.length);fen=main.fens[Math.max(0,ply)];warn.push(`coup « ${x.coup} » non retrouvé dans la partie`)}}
-    const vars=(x.variantes||[]).map(v=>{const r=replay(fen,v.coups||[]);return {sans:r.sans,ucis:r.ucis,bad:r.bad?r.bad.san:null,verdict:String(v.verdict||"")}}).filter(v=>v.sans.length||v.bad);
-    ms.push({sec,t:fmtT(sec),ref:String(x.coup||""),ply,fen,comment:String(x.commentaire||"").trim(),idea:String(x.idee||"").trim(),vars,warn});
-  }
+  for(const x of raw.moments||[]){const m=vMoment(x,main);if(m)ms.push(m)}
   ms.sort((a,b)=>a.sec-b.sec);
   return {main,ms};
+}
+// un moment commenté, replacé sur la partie vérifiée ; on garde les variantes brutes pour pouvoir les rejouer
+// si la partie est complétée plus tard
+function vMoment(x,main){
+  const sec=toSec(x.t);if(sec==null)return null;
+  const m={sec,t:fmtT(sec),ref:String(x.coup||""),rawFen:x.fen?String(x.fen).trim():null,rawVars:(x.variantes||[]).map(v=>({coups:(v.coups||[]).map(String),verdict:String(v.verdict||"")})),
+    comment:String(x.commentaire||"").trim(),idea:String(x.idee||"").trim()};
+  vPlace(m,main);return m;
+}
+function vPlace(m,main){
+  let fen=null,ply=null;const warn=[];
+  if(m.rawFen){const c=new Chess();if(c.load(m.rawFen))fen=c.fen();else warn.push("FEN illisible")}
+  if(!fen){const p=plyOf(m.ref,main.sans);
+    if(p>=0){ply=p;fen=main.fens[p]}else{ply=Math.min(-p,main.sans.length);fen=main.fens[Math.max(0,ply)];warn.push(`coup « ${m.ref} » non retrouvé dans la partie`)}}
+  const changed=m.fen!==fen;m.fen=fen;m.ply=ply;m.warn=warn;
+  m.vars=(m.rawVars||[]).map(v=>{const r=replay(fen,v.coups);return {sans:r.sans,ucis:r.ucis,bad:r.bad?r.bad.san:null,verdict:v.verdict}}).filter(v=>v.sans.length||v.bad);
+  if(changed){delete m.ev;delete m.best}
+  return m;
 }
 
 /* ---------- moteur ---------- */
@@ -180,22 +204,22 @@ async function vImport(){
       if(p.coups&&p.coups.length){const prev=raw.partie.coups,nw=p.coups.map(cleanSan);
         // Gemini peut répéter le début : on garde la plus longue suite légale
         const J=replay(START_FEN,prev.concat(nw)),A=replay(START_FEN,nw),best=A.sans.length>J.sans.length?A:J;
-        if(best.sans.length>prev.length){raw.partie.coups=best.sans;raw.cut=best.bad?best.bad.san:null}else if(!raw.cut&&J.bad)raw.cut=J.bad.san}
+        if(best.sans.length>prev.length){raw.partie.coups=best.sans;raw.cut=best.bad?best.bad.san:null;raw.fixed=(raw.fixed||0)+(best.fixed||0)}else if(!raw.cut&&J.bad)raw.cut=J.bad.san}
       raw.moments.push(...(data.moments||[]));
     }
     const {main,ms}=vBuild(raw,{pgn});
     if(!ms.length)throw new Error("Gemini n'a trouvé aucun moment commenté. Essaie un autre passage ou le modèle Argon.");
     const v={id:id+"-"+Date.now().toString(36),vid:id,url:yurl,at:Date.now(),model:usedModel,tokens:tok,
       title:raw.titre||$("#vtitle").value.trim()||"Vidéo "+id,author:$("#vauthor").value.trim(),license:$("#vlic").value,
-      game:{white:raw.partie.blancs||"",black:raw.partie.noirs||"",event:raw.partie.evenement||"",sans:main.sans,given:!!pgn,cut:main.bad?main.bad.san:(pgn?null:raw.cut)},
+      game:{white:raw.partie.blancs||"",black:raw.partie.noirs||"",event:raw.partie.evenement||"",sans:main.sans,given:!!pgn,cut:main.bad?main.bad.san:(pgn?null:raw.cut),fixed:(main.fixed||0)+(pgn?0:raw.fixed||0)},
       moments:ms};
     if($("#vtitle").value.trim())v.title=$("#vtitle").value.trim();
     const lib=vLocal();lib.unshift(v);vSave(lib);
-    say(`${ms.length} moments extraits, ${main.sans.length} coups vérifiés${v.game.cut?` (liste coupée au coup illégal « ${v.game.cut} »)`:""}. Évaluation Stockfish en cours…`);
+    say(`${ms.length} moments extraits, ${main.sans.length} coups vérifiés${v.game.fixed?` (dont ${v.game.fixed} mal noté${v.game.fixed>1?"s":""} par Gemini et corrigé${v.game.fixed>1?"s":""})`:""}${v.game.cut?` (liste coupée au coup illégal « ${v.game.cut} »)`:""}. Évaluation Stockfish en cours…`);
     VID.cur=v.id;VID.m=0;renderVideo();
     await vEval(v,i=>{const e=$("#vstat");if(e)e.textContent=`Évaluation Stockfish : moment ${i+1}/${v.moments.length}…`});
     vSave(vLib().map(x=>x.id===v.id?v:x));
-    const e=$("#vstat");if(e){e.textContent=`Terminé : ${ms.length} moments, ${main.sans.length} coups vérifiés${tok?` · ${Math.round(tok/1000)} k jetons`:""} · modèle ${usedModel}.`}
+    const e=$("#vstat");if(e){e.textContent=`Terminé : ${ms.length} moments, ${main.sans.length} coups vérifiés${v.game.fixed?` dont ${v.game.fixed} corrigé${v.game.fixed>1?"s":""}`:""}${v.game.cut?`, arrêt sur « ${v.game.cut} »`:""}${tok?` · ${Math.round(tok/1000)} k jetons`:""} · modèle ${usedModel}.`}
     if(VID.cur===v.id)vShowMoment(VID.m);
   }catch(e){say("Échec : "+e.message,1)}
   finally{VID.run=false;const b=$("#vgo");if(b)b.disabled=false}
@@ -269,7 +293,7 @@ function vViewer(v){
     <div><h3 style="margin:0">${esc(v.title)}</h3><span class="muted" style="font-size:.85rem">${esc(v.author||"auteur non renseigné")} · ${esc(LIC[v.license]||v.license)} · <a href="${esc(v.url)}" target="_blank" rel="noopener">voir sur YouTube</a>${v.game.white||v.game.black?` · ${esc(v.game.white)} – ${esc(v.game.black)}`:""}</span></div>
     <button class="btn" id="vback" style="margin-left:auto">← Bibliothèque</button>
    </div>
-   ${v.game.cut?`<p class="vstat err" style="margin:0">La liste de coups lue par Gemini contenait un coup illégal (« ${esc(v.game.cut)} ») : la partie s'arrête au coup ${v.game.sans.length}. Colle le PGN pour fiabiliser.</p>`:""}
+   ${v.game.cut?`<div class="vstat err" style="display:grid;gap:8px"><span>Gemini a lu un coup impossible (« ${esc(v.game.cut)} ») après ${esc(plyName(v.game.sans.length,v.game.sans[v.game.sans.length-1]))} : la partie vérifiée s'arrête là, et les moments suivants sont placés sur cette dernière position. Tu peux faire relire la suite à Gemini, ou coller le PGN si tu le connais.</span><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="vcont">Relire la suite avec Gemini</button></span></div>`:""}
    <div id="vstat" class="vstat" hidden></div>
    <div class="vview">
     <div class="vleft"><div class="boardbox"><div id="vboard" class="cgb"></div></div>
@@ -281,6 +305,7 @@ function vViewer(v){
    </div></div>`;
   VID.cg=Chessground($("#vboard"),{fen:START_FEN,coordinates:true,viewOnly:true,animation:{enabled:true,duration:140},drawable:{enabled:true,visible:true}});
   $("#vback").onclick=()=>{VID.cur=null;renderVideo()};
+  if($("#vcont"))$("#vcont").onclick=()=>vContinue(v.id);
   $("#vprev").onclick=()=>vShowMoment(VID.m-1);$("#vnext").onclick=()=>vShowMoment(VID.m+1);
   $("#vflip").onclick=()=>VID.cg&&VID.cg.toggleOrientation();
   $("#vmoms").onclick=e=>{const b=e.target.closest("[data-m]");if(b)vShowMoment(+b.dataset.m)};
@@ -450,3 +475,37 @@ function videoContext(fen){
 }
 // après le script principal (store, RV… sont définis plus bas dans la page)
 if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",()=>{vLoadShared();vLoadPriv()});else{vLoadShared();vLoadPriv()}
+
+/* ---------- relire la suite de la partie après un coup illisible ---------- */
+async function vContinue(id){
+  const v=vLib().find(x=>x.id===id),cfg=vCfg(),st=$("#vstat"),b=$("#vcont");if(!v||VID.run)return;
+  const say=(t,err)=>{st.hidden=false;st.className="vstat"+(err?" err":"");st.textContent=t};
+  if(!cfg.k)return say("Ajoute ta clé Gemini dans la page de la bibliothèque.",1);
+  if(v.remote&&!vLocal().some(x=>x.id===v.id))return say("Cette vidéo vient d'un dépôt GitHub : importe-la de nouveau pour la compléter.",1);
+  VID.run=true;if(b)b.disabled=true;
+  try{
+    const known=v.game.sans.slice(),R0=replay(START_FEN,known),n=known.length;
+    const lost=v.moments.filter(m=>m.warn&&m.warn.length).map(m=>m.sec);
+    const from=lost.length?Math.max(0,Math.min(...lost)-90):null;
+    const o={prev:known,cont:{fen:R0.fens[n],next:`${Math.floor(n/2)+1} des ${n%2?"noirs":"blancs"}`}};
+    if(from!=null){o.from=from;o.to=from+3600}
+    say(`Gemini relit la vidéo${from!=null?` à partir de ${fmtT(from)}`:""} pour lire la suite après ${plyName(n,known[n-1])}… compte 1 à 3 minutes.`);
+    const {data,model}=await gemini(cfg,v.url,o,m=>say(m));
+    const nw=((data.partie&&data.partie.coups)||[]).map(cleanSan);
+    const J=replay(START_FEN,known.concat(nw)),A=replay(START_FEN,nw),best=A.sans.length>J.sans.length&&A.sans.slice(0,n).join()===known.join()?A:J;
+    if(best.sans.length<=n)throw new Error(`Gemini n'a pas pu lire de coup valable après ${plyName(n,known[n-1])}${nw.length?` (il propose « ${nw[0]} »)`:""}. Colle le PGN si tu le connais.`);
+    v.game.sans=best.sans;v.game.cut=best.bad?best.bad.san:null;v.game.fixed=(v.game.fixed||0)+(best.fixed||0);v.model=model;
+    const main={sans:best.sans,fens:best.fens};
+    for(const m of v.moments)if(m.warn&&m.warn.length){if(!m.rawVars)m.rawVars=(m.vars||[]).map(x=>({coups:x.sans,verdict:x.verdict}));vPlace(m,main)}
+    let added=0;
+    for(const x of data.moments||[]){const m=vMoment(x,main);if(!m)continue;if(v.moments.some(y=>Math.abs(y.sec-m.sec)<8&&y.ref===m.ref))continue;v.moments.push(m);added++}
+    v.moments.sort((a,b)=>a.sec-b.sec);
+    vSave(vLocal().map(x=>x.id===v.id?v:x));
+    say(`Partie complétée : ${best.sans.length} coups vérifiés (+${best.sans.length-n})${best.bad?`, nouvel arrêt sur « ${best.bad.san} »`:""}${added?`, ${added} nouveau${added>1?"x":""} moment${added>1?"s":""}`:""}. Évaluation Stockfish…`);
+    await vEval(v,i=>say(`Évaluation Stockfish : moment ${i+1}/${v.moments.length}…`));
+    vSave(vLocal().map(x=>x.id===v.id?v:x));
+    VID.run=false;renderVideo();
+    const s2=$("#vstat");if(s2){s2.hidden=false;s2.className="vstat";s2.textContent=`Partie complétée : ${best.sans.length} coups vérifiés${best.bad?` (nouvel arrêt sur « ${best.bad.san} »)`:""} · modèle ${model}.`}
+  }catch(e){say("Échec : "+e.message,1)}
+  finally{VID.run=false;const b2=$("#vcont");if(b2)b2.disabled=false}
+}
