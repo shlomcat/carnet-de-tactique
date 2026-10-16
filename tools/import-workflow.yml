@@ -1,0 +1,47 @@
+# Carnet de tactique — analyse des vidéos dans le cloud.
+# À placer dans le dépôt privé de données : .github/workflows/import.yml
+# Secret requis : GEMINI_API_KEY (Settings › Secrets and variables › Actions).
+name: Import des vidéos
+on:
+  push:
+    paths: [queue.json]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"   # filet de sécurité si un déclenchement a été manqué
+concurrency:
+  group: import-videos
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Vidéos en attente ?
+        id: q
+        run: |
+          n=$(node -e 'const q=JSON.parse(require("fs").readFileSync("queue.json","utf8"));const t=Date.now();console.log((q.jobs||[]).filter(j=>j.status==="queued"||(j.status==="running"&&t-(j.updated||j.started||0)>3*3600e3)).length)' 2>/dev/null || echo 0)
+          echo "n=$n" >> "$GITHUB_OUTPUT"; echo "$n vidéo(s) en attente"
+      - name: Application du carnet
+        if: steps.q.outputs.n != '0'
+        uses: actions/checkout@v4
+        with:
+          repository: shlomcat/carnet-de-tactique
+          path: _app
+      - name: Stockfish et chess.js
+        if: steps.q.outputs.n != '0'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq stockfish >/dev/null
+          npm install --prefix _app/tools --no-save --silent chess.js@0.10.3
+      - name: Analyse
+        if: steps.q.outputs.n != '0'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          STOCKFISH: /usr/games/stockfish
+        run: |
+          git config user.name "carnet-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "_app/" >> .git/info/exclude
+          node _app/tools/cloud_import.js .

@@ -198,6 +198,24 @@ async function vExtract(cfg,yurl,a,b,pgn,say,label){
 }
 
 
-const api={START_FEN,ytId,toSec,fmtT,VSCHEMA,vPrompt,geminiOnce,busyErr,missingErr,sleep,gemini,vParseJSON,cleanSan,repairMove,replay,plyName,pgnMoves,plyOf,vBuild,vMoment,vPlace,TOC_SCHEMA,tocPrompt,vToc,vExtract,setChess:C=>{ChessCtor=C}};
+// parties d'une vidéo déjà présentes (relance après un échec) : on ne garde que les manquantes
+function vSegMissing(segs,have){
+  const ov=(g,x)=>{const a=Math.max(g.a||0,x.seg.from||0),b=Math.min(g.b||1e9,x.seg.to||1e9);return b-a>0.5*Math.min((g.b||1e9)-(g.a||0),(x.seg.to||1e9)-(x.seg.from||0))};
+  const H=(have||[]).filter(x=>x&&x.seg),total=segs.length,idx=segs.map((g,i)=>({...g,i}));
+  if(total<2||!H.length)return {segs:idx,total,skipped:0};
+  const left=idx.filter(g=>!H.some(x=>ov(g,x)));return {segs:left,total,skipped:total-left.length};
+}
+// une partie lue devient une entrée de bibliothèque (même format sur le site et dans le cloud)
+function vEntry(o){
+  const {id,yurl,g,k,n,r,main,ms,pgn,base,form}=o;
+  const white=r.raw.partie.blancs||g.white||"",black=r.raw.partie.noirs||g.black||"";
+  return {id:id+"-"+(n>1?"p"+(k+1)+"-":"")+Date.now().toString(36),vid:id,url:yurl,at:Date.now(),model:r.model,tokens:r.tok,
+    title:n>1?`${base} — partie ${k+1}${white||black?` : ${white} – ${black}`:""}`:base,author:form.author||"",license:form.license||"perso",
+    seg:g.a!=null||g.b!=null?{from:g.a,to:g.b}:null,part:n>1?{k:k+1,n}:null,
+    game:{white,black,event:r.raw.partie.evenement||g.desc||"",sans:main.sans,given:!!pgn,cut:main.bad?main.bad.san:(pgn?null:r.raw.cut),fixed:(main.fixed||0)+(pgn?0:r.raw.fixed||0)},
+    moments:ms};
+}
+
+const api={START_FEN,ytId,toSec,fmtT,VSCHEMA,vPrompt,geminiOnce,busyErr,missingErr,sleep,gemini,vParseJSON,cleanSan,repairMove,replay,plyName,pgnMoves,plyOf,vBuild,vMoment,vPlace,TOC_SCHEMA,tocPrompt,vToc,vExtract,vSegMissing,vEntry,setChess:C=>{ChessCtor=C}};
 if(typeof module!=="undefined"&&module.exports)module.exports=api;else root.VCore=api;
 })(typeof window!=="undefined"?window:globalThis);

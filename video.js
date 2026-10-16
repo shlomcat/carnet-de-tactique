@@ -3,7 +3,7 @@
    Gemini regarde la vidéo et renvoie la partie + les commentaires horodatés ;
    chess.js vérifie chaque coup, Stockfish évalue chaque position retenue. */
 "use strict";
-const {START_FEN,ytId,toSec,fmtT,VSCHEMA,vPrompt,geminiOnce,busyErr,missingErr,sleep,gemini,vParseJSON,cleanSan,repairMove,replay,plyName,pgnMoves,plyOf,vBuild,vMoment,vPlace,TOC_SCHEMA,tocPrompt,vToc,vExtract}=VCore;
+const {START_FEN,ytId,toSec,fmtT,VSCHEMA,vPrompt,geminiOnce,busyErr,missingErr,sleep,gemini,vParseJSON,cleanSan,repairMove,replay,plyName,pgnMoves,plyOf,vBuild,vMoment,vPlace,TOC_SCHEMA,tocPrompt,vToc,vExtract,vSegMissing,vEntry}=VCore;
 const VID={key:"carnet:gemini",lib:"carnet:videos",gh:"carnet:github",shared:[],priv:[],dbv:[],dbh:null,cur:null,m:0,cg:null,run:false,vfen:null};
 const GMODELS=[["gemini-3.8-flash","Gemini 3.8 Flash (recommandé)"],["gemini-4-argon","Gemini 4 Argon (plus fin, plus lent)"],["gemini-3.6-flash","Gemini 3.6 Flash"],["gemini-3.5-flash-lite","Gemini 3.5 Flash-Lite (rapide)"]];
 
@@ -62,12 +62,10 @@ async function vImport(){
       catch(e){say("Repérage impossible ("+e.message+"), analyse de la vidéo d'un seul tenant…")}
     }
     // parties déjà importées pour cette vidéo (relance après un échec) : on ne relit que les manquantes
-    const have=vLib().filter(x=>x.vid===id&&x.seg),ov=(g,x)=>{const a=Math.max(g.a||0,x.seg.from||0),b=Math.min(g.b||1e9,x.seg.to||1e9);return b-a>0.5*Math.min((g.b||1e9)-(g.a||0),(x.seg.to||1e9)-(x.seg.from||0))};
-    const total=segs.length,known=segs.map(g=>have.some(x=>ov(g,x)));
-    if(split&&total>1&&known.some(Boolean)){segs=segs.map((g,i)=>({...g,i})).filter((g,i)=>!known[i]);
-      if(!segs.length){VID.run=false;$("#vgo").disabled=false;return say(`Les ${total} parties de cette vidéo sont déjà dans ta bibliothèque.`)}
-      say(`${total-segs.length} partie${total-segs.length>1?"s":""} déjà importée${total-segs.length>1?"s":""} : lecture des ${segs.length} manquante${segs.length>1?"s":""}…`);await sleep(1500)}
-    else segs=segs.map((g,i)=>({...g,i}));
+    const miss=vSegMissing(segs,split?vLib().filter(x=>x.vid===id):[]),total=miss.total;segs=miss.segs;
+    if(miss.skipped){
+      if(!segs.length){VID.run=false;vAwake(false);$("#vgo").disabled=false;return say(`Les ${total} parties de cette vidéo sont déjà dans ta bibliothèque.`)}
+      say(`${miss.skipped} partie${miss.skipped>1?"s":""} déjà importée${miss.skipped>1?"s":""} : lecture des ${segs.length} manquante${segs.length>1?"s":""}…`);await sleep(1500)}
     const n=total;
     // 2. une analyse par partie ; chaque partie est enregistrée dès qu'elle est prête
     for(const g of segs){
@@ -78,12 +76,7 @@ async function vImport(){
         if(!ms.length)throw new Error("aucun moment commenté trouvé");
         // même titre de vidéo pour toutes les parties : celui du formulaire, du repérage, ou à défaut celui lu dans la première partie
         if(!vtitle&&r.raw.titre)vtitle=r.raw.titre;
-        const white=r.raw.partie.blancs||g.white,black=r.raw.partie.noirs||g.black,base=vtitle||"Vidéo "+id;
-        const v={id:id+"-"+(n>1?"p"+(k+1)+"-":"")+Date.now().toString(36),vid:id,url:yurl,at:Date.now(),model:r.model,tokens:r.tok,
-          title:n>1?`${base} — partie ${k+1}${white||black?` : ${white} – ${black}`:""}`:base,author:form.author,license:form.license,
-          seg:g.a!=null||g.b!=null?{from:g.a,to:g.b}:null,part:n>1?{k:k+1,n}:null,
-          game:{white,black,event:r.raw.partie.evenement||g.desc||"",sans:main.sans,given:!!pgn,cut:main.bad?main.bad.san:(pgn?null:r.raw.cut),fixed:(main.fixed||0)+(pgn?0:r.raw.fixed||0)},
-          moments:ms};
+        const v=vEntry({id,yurl,g,k,n,r,main,ms,pgn,base:vtitle||"Vidéo "+id,form});
         // les parties d'une même vidéo restent dans l'ordre en tête de la bibliothèque
         const lib=vLocal(),nxt=lib.findIndex(x=>x.vid===id&&x.part&&x.part.k>k+1);let at=nxt;
         if(at<0){at=done.length;lib.forEach((x,j)=>{if(x.vid===id&&x.part&&x.part.k<k+1)at=j+1})}
