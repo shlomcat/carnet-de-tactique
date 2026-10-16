@@ -384,10 +384,11 @@ function ghBind(){
   // active les boutons dès la saisie, sans attendre de quitter le champ
   const live=()=>{save();const n=ghCounts(),t=$("#ghtok").value.trim();$("#ghsync").disabled=!(t&&okRepo($("#ghpriv").value.trim())&&n.priv);if(!t)$("#ghprivst").textContent="Colle ton jeton GitHub ci-dessus";$("#ghpub").disabled=!(t&&n.pub)};
   ["#ghtok","#ghpriv","#ghrepo"].forEach(k=>$(k).addEventListener("input",live));live();
+  $("#ghpriv").addEventListener("change",()=>{const e=$("#ghprivst");if(e)e.innerHTML=`<span class="spin" aria-hidden="true"></span> Lecture du dépôt…`});
   if($("#ghdel"))$("#ghdel").onclick=()=>{store.set(VID.gh,Object.assign(ghCfg(),{t:""}));VID.priv=[];VID.sig=null;renderVideo()};
-  const run=(btn,kind)=>async()=>{save();const st=$("#ghstat"),b=$(btn);b.disabled=true;st.textContent="Envoi vers GitHub…";
-    try{const n=await ghSync(kind);st.textContent=kind==="pub"?`Publié : ${n} vidéo${n>1?"s":""} dans le dépôt public. Le site sera à jour dans une minute environ.`:`Enregistré : ${n} vidéo${n>1?"s":""} dans le dépôt privé.`;setTimeout(renderVideo,1500)}
-    catch(e){st.textContent="Échec : "+e.message;b.disabled=false}};
+  const run=(btn,kind)=>async()=>{save();const st=$("#ghstat"),b=$(btn),lbl=b.textContent;b.disabled=true;b.innerHTML=`<span class="spin" aria-hidden="true"></span> Envoi en cours…`;st.className="muted";st.textContent="Connexion à GitHub…";
+    try{const n=await ghSync(kind);st.className="ok";st.textContent=kind==="pub"?`✓ Publié : ${n} vidéo${n>1?"s":""} dans le dépôt public. Le site sera à jour dans une minute environ.`:`✓ Enregistré : ${n} vidéo${n>1?"s":""} dans le dépôt privé.`;ghLive()}
+    catch(e){st.className="err";st.textContent="Échec : "+e.message;b.textContent=lbl;b.disabled=false}};
   $("#ghsync").onclick=run("#ghsync","priv");$("#ghpub").onclick=run("#ghpub","pub");
 }
 const b64=str=>btoa(unescape(encodeURIComponent(str)));
@@ -397,7 +398,11 @@ function ghH(t,raw){return {Authorization:"Bearer "+t,Accept:raw?"application/vn
 async function ghRead(repo,t){
   const api=`https://api.github.com/repos/${repo}/contents/videos.json`;
   let r;try{r=await fetch(api,{headers:ghH(t),cache:"no-store"})}catch(e){throw new Error("impossible de joindre GitHub depuis cette page : utilise le site shlomcat.github.io/carnet-de-tactique")}
-  if(r.status===404)return {sha:null,videos:[],api};
+  if(r.status===404){
+    // 404 : soit le fichier n'existe pas encore, soit le jeton ne voit pas le dépôt (GitHub cache les dépôts privés)
+    const q=await fetch(`https://api.github.com/repos/${repo}`,{headers:ghH(t),cache:"no-store"}).catch(()=>null);
+    if(!q||!q.ok)throw new Error(`ton jeton n'a pas accès au dépôt ${repo}. Sur GitHub, modifie le jeton (Settings › Developer settings › Fine-grained tokens) et ajoute ce dépôt dans « Repository access »`);
+    return {sha:null,videos:[],api}}
   if(!r.ok)throw new Error(r.status===401?"jeton refusé":r.status===403?`jeton sans accès à ${repo}`:"GitHub "+r.status);
   const j=await r.json();let txt=null;
   try{txt=j.content?unb64(j.content):null}catch(e){}
@@ -419,9 +424,12 @@ async function ghSync(kind,update){
   const body={message:`Bibliothèque vidéos : ${all.length} vidéo${all.length>1?"s":""} (+${add.length})`,content:b64(JSON.stringify({format:"carnet-videos",version:1,videos:all},null,1))};
   if(cur.sha)body.sha=cur.sha;
   const r=await fetch(cur.api,{method:"PUT",headers:Object.assign({"Content-Type":"application/json"},ghH(g.t)),body:JSON.stringify(body)});
-  if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error((j.message||"GitHub "+r.status)+(r.status===409?" (réessaie)":""))}
-  if(kind==="pub")VID.shared=all;else VID.priv=all;VID.sig=null;return all.length;
+  if(!r.ok){const j=await r.json().catch(()=>({}));
+    if(r.status===404||r.status===403)throw new Error(`ton jeton peut lire ${repo} mais pas y écrire. Sur GitHub, modifie le jeton et mets la permission « Contents » sur « Read and write »`);
+    throw new Error((j.message||"GitHub "+r.status)+(r.status===409?" (réessaie)":""))}
+  if(kind==="pub")VID.shared=all;else{VID.priv=all;VID.privErr=null}VID.sig=null;return all.length;
 }
+function vRefreshRevue(){if(typeof RV!=="undefined"&&RV.g&&typeof revGo==="function"&&RV.ply&&!RV.v)revGo(RV.ply)}
 function vRefresh(){
   VID.sig=null;
   const p=document.getElementById("p-video");if(p&&!p.hidden&&!VID.run&&typeof renderVideo==="function"&&!VID.cur)renderVideo();
@@ -432,7 +440,8 @@ function vLoadShared(){
 }
 function vLoadPriv(){
   const g=ghCfg();if(!g.t||!okRepo(g.priv)){VID.priv=[];return Promise.resolve()}
-  return ghRead(g.priv,g.t).then(d=>{VID.priv=d.videos;VID.privErr=null;vRefresh()}).catch(e=>{VID.privErr=e.message;console.warn("dépôt privé :",e.message);vRefresh()});
+  const e=$("#ghprivst");if(e)e.innerHTML=`<span class="spin" aria-hidden="true"></span> Lecture du dépôt…`;
+  return ghRead(g.priv,g.t).then(d=>{VID.priv=d.videos;VID.privErr=null;VID.sig=null;ghLive();vRefreshRevue()}).catch(err=>{VID.privErr=err.message;console.warn("dépôt privé :",err.message);ghLive()});
 }
 
 /* ---------- exemples similaires : comparaison de positions ---------- */
@@ -556,4 +565,14 @@ async function vAutoPush(update){
   const note=t=>{const e=$("#vstat");if(e&&!e.hidden)e.textContent=e.textContent.replace(/ · (Envoi|Envoyée|Envoi impossible)[^·]*$/,"")+" · "+t};
   try{note("Envoi au dépôt privé…");const n=await ghSync("priv",update);note(`Envoyée au dépôt privé (${n} vidéo${n>1?"s":""})`)}
   catch(e){note("Envoi impossible au dépôt privé : "+e.message)}
+}
+
+// met à jour en direct les compteurs et boutons du panneau GitHub, sans redessiner la page
+function ghLive(){
+  const e=$("#ghprivst");if(!e)return;const g=ghCfg(),n=ghCounts();
+  e.textContent=!g.t?"Colle ton jeton GitHub ci-dessus":VID.privErr?"Dépôt privé : "+VID.privErr:`${VID.priv.length} vidéo${VID.priv.length>1?"s":""} dans le dépôt privé`;
+  e.className=VID.privErr?"err":"muted";
+  const b=$("#ghsync");if(b){b.textContent=n.priv?`Envoyer ${n.priv} vidéo${n.priv>1?"s":""} au dépôt privé`:"Rien de nouveau à envoyer";b.disabled=!(g.t&&okRepo(g.priv)&&n.priv)}
+  const p=$("#ghpub");if(p){p.textContent=n.pub?`Publier ${n.pub} vidéo${n.pub>1?"s":""} libre${n.pub>1?"s":""}`:"Rien de nouveau à publier";p.disabled=!(g.t&&n.pub)}
+  document.querySelectorAll("#p-video .vitem").forEach(it=>{const v=vLib().find(x=>x.id===it.dataset.v),w=it.querySelector(".muted b");if(v&&w)w.textContent=vWhere(v)});
 }
