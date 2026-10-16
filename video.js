@@ -64,7 +64,7 @@ async function geminiOnce(cfg,model,url,o,plain){
   const call=async s=>{
     let r;
     try{r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":cfg.k},body:JSON.stringify(body(s))})}
-    catch(e){throw new Error("Impossible de joindre l'API Gemini depuis cette page (réseau ou page hébergée qui bloque les appels externes). Utilise le site GitHub.")}
+    catch(e){if(window.claude)throw new Error("La version Claude du carnet ne peut pas joindre Gemini : importe les vidéos depuis le site GitHub.");const x=new Error("connexion à Gemini interrompue (réseau, mise en veille de l'écran ?)");x.net=true;throw x}
     const j=await r.json().catch(()=>({}));
     if(!r.ok){const m=(j.error&&j.error.message)||("HTTP "+r.status);const e=new Error(m);e.status=r.status;throw e}
     const c=j.candidates&&j.candidates[0];
@@ -78,7 +78,7 @@ async function geminiOnce(cfg,model,url,o,plain){
     if(e.status===400&&/schema|response_schema|responseSchema|Invalid JSON payload/i.test(e.message))return call(false);throw e}
 }
 // saturation (503, quota 429) : on réessaie, puis on bascule sur un autre modèle
-const busyErr=e=>e&&(e.status===503||e.status===429||e.status===500||/high demand|overloaded|unavailable|try again later|resource.?exhausted|quota/i.test(e.message||""));
+const busyErr=e=>e&&(e.net||e.status===503||e.status===429||e.status===500||/high demand|overloaded|unavailable|try again later|resource.?exhausted|quota/i.test(e.message||""));
 const missingErr=e=>e&&(e.status===404||/not found|is not supported|unknown model/i.test(e.message||""));
 const sleep=ms=>new Promise(z=>setTimeout(z,ms));
 async function gemini(cfg,url,o,info){
@@ -90,7 +90,7 @@ async function gemini(cfg,url,o,info){
       catch(e){last=e;
         if(missingErr(e)){info&&info(`Modèle ${model} indisponible, essai avec un autre…`);break}
         if(!busyErr(e))throw e;
-        if(k<2){const q=e.status===429||/quota|resource.?exhausted/i.test(e.message||""),w=q?(k?60:30):(k?15:5);info&&info(`${model} ${q?"a atteint sa limite de débit":"est saturé"}, nouvel essai dans ${w} s…`);await sleep(w*1000)}
+        if(k<2){if(e.net){const w=k?20:5;info&&info(`Connexion interrompue, nouvel essai dans ${w} s…`);await sleep(w*1000);continue}const q=e.status===429||/quota|resource.?exhausted/i.test(e.message||""),w=q?(k?60:30):(k?15:5);info&&info(`${model} ${q?"a atteint sa limite de débit":"est saturé"}, nouvel essai dans ${w} s…`);await sleep(w*1000)}
         else info&&info(`${model} reste saturé, essai avec un autre modèle…`)}
     }
   }
@@ -251,10 +251,17 @@ async function vImport(){
         if(t.games.length)segs=t.games;else if(t.dur)segs=[{a:from||0,b:t.dur,white:"",black:"",desc:""}]}
       catch(e){say("Repérage impossible ("+e.message+"), analyse de la vidéo d'un seul tenant…")}
     }
-    const n=segs.length;
+    // parties déjà importées pour cette vidéo (relance après un échec) : on ne relit que les manquantes
+    const have=vLib().filter(x=>x.vid===id&&x.seg),ov=(g,x)=>{const a=Math.max(g.a||0,x.seg.from||0),b=Math.min(g.b||1e9,x.seg.to||1e9);return b-a>0.5*Math.min((g.b||1e9)-(g.a||0),(x.seg.to||1e9)-(x.seg.from||0))};
+    const total=segs.length,known=segs.map(g=>have.some(x=>ov(g,x)));
+    if(split&&total>1&&known.some(Boolean)){segs=segs.map((g,i)=>({...g,i})).filter((g,i)=>!known[i]);
+      if(!segs.length){VID.run=false;$("#vgo").disabled=false;return say(`Les ${total} parties de cette vidéo sont déjà dans ta bibliothèque.`)}
+      say(`${total-segs.length} partie${total-segs.length>1?"s":""} déjà importée${total-segs.length>1?"s":""} : lecture des ${segs.length} manquante${segs.length>1?"s":""}…`);await sleep(1500)}
+    else segs=segs.map((g,i)=>({...g,i}));
+    const n=total;
     // 2. une analyse par partie ; chaque partie est enregistrée dès qu'elle est prête
-    for(let k=0;k<n;k++){
-      const g=segs[k],label=n>1?`Partie ${k+1}/${n}${g.white||g.black?` (${g.white} – ${g.black})`:""} · `:"";
+    for(const g of segs){
+      const k=g.i,label=n>1?`Partie ${k+1}/${n}${g.white||g.black?` (${g.white} – ${g.black})`:""} · `:"";
       try{
         const r=await vExtract(cfg,yurl,g.a,g.b,pgn,say,label);tok+=r.tok;
         const {main,ms}=vBuild(r.raw,{pgn});
@@ -266,7 +273,9 @@ async function vImport(){
           game:{white,black,event:r.raw.partie.evenement||g.desc||"",sans:main.sans,given:!!pgn,cut:main.bad?main.bad.san:(pgn?null:r.raw.cut),fixed:(main.fixed||0)+(pgn?0:r.raw.fixed||0)},
           moments:ms};
         // les parties d'une même vidéo restent dans l'ordre en tête de la bibliothèque
-        const lib=vLocal();lib.splice(done.length,0,v);vSave(lib);
+        const lib=vLocal(),nxt=lib.findIndex(x=>x.vid===id&&x.part&&x.part.k>k+1);let at=nxt;
+        if(at<0){at=done.length;lib.forEach((x,j)=>{if(x.vid===id&&x.part&&x.part.k<k+1)at=j+1})}
+        lib.splice(at,0,v);vSave(lib);
         say(`${label}${ms.length} moments, ${main.sans.length} coups vérifiés. Évaluation Stockfish…`);
         await vEval(v,i=>say(`${label}Évaluation Stockfish : moment ${i+1}/${v.moments.length}…`));
         vSave(vLocal().map(x=>x.id===v.id?v:x));
@@ -278,7 +287,7 @@ async function vImport(){
     if(n===1){VID.cur=done[0].v.id;VID.m=0}
     renderVideo();
     const v=done.length===1?done[0].v:null;
-    const msg=n>1?`Terminé : ${done.length} partie${done.length>1?"s":""} importée${done.length>1?"s":""} sur ${n} (${done.map(d=>d.v.moments.length).reduce((a,b)=>a+b,0)} moments)${failed.length?`. Échec ${failed.map(f=>`partie ${f.k} : ${f.msg}`).join(" ; ")}`:""}${tok?` · ${Math.round(tok/1000)} k jetons`:""}.`
+    const msg=n>1?`Terminé : ${done.length} partie${done.length>1?"s":""} importée${done.length>1?"s":""}${segs.length<n?` (sur ${segs.length} manquante${segs.length>1?"s":""})`:` sur ${n}`} (${done.map(d=>d.v.moments.length).reduce((a,b)=>a+b,0)} moments)${failed.length?`. Échec ${failed.map(f=>`partie ${f.k} : ${f.msg}`).join(" ; ")} — relance la même vidéo pour ne reprendre que ${failed.length>1?"ces parties":"cette partie"}`:""}${tok?` · ${Math.round(tok/1000)} k jetons`:""}.`
       :`Terminé : ${v.moments.length} moments, ${v.game.sans.length} coups vérifiés${v.game.fixed?` dont ${v.game.fixed} corrigé${v.game.fixed>1?"s":""}`:""}${v.game.cut?`, arrêt sur « ${v.game.cut} »`:""}${tok?` · ${Math.round(tok/1000)} k jetons`:""} · modèle ${v.model}.`;
     const e=$("#vstat");if(e){e.hidden=false;e.className="vstat"+(failed.length?" err":"");e.textContent=msg}
     if(VID.cur&&v&&VID.cur===v.id)vShowMoment(VID.m);
