@@ -7,7 +7,7 @@ on:
     paths: [queue.json]
   workflow_dispatch:
   schedule:
-    - cron: "17 */6 * * *"   # filet de sécurité si un déclenchement a été manqué
+    - cron: "17 */3 * * *"   # nouveaux essais (Gemini saturé) et filet de sécurité
 concurrency:
   group: import-videos
   cancel-in-progress: false
@@ -22,7 +22,7 @@ jobs:
       - name: Vidéos en attente ?
         id: q
         run: |
-          n=$(node -e 'const q=JSON.parse(require("fs").readFileSync("queue.json","utf8"));const t=Date.now();console.log((q.jobs||[]).filter(j=>j.status==="queued"||(j.status==="running"&&t-(j.updated||j.started||0)>3*3600e3)).length)' 2>/dev/null || echo 0)
+          n=$(node -e 'const q=JSON.parse(require("fs").readFileSync("queue.json","utf8"));const t=Date.now();console.log((q.jobs||[]).filter(j=>(j.status==="queued"&&(j.retryAt||0)<=t)||(j.status==="running"&&t-(j.updated||j.started||0)>3*3600e3)).length)' 2>/dev/null || echo 0)
           echo "n=$n" >> "$GITHUB_OUTPUT"; echo "$n vidéo(s) en attente"
       - name: Application du carnet
         if: steps.q.outputs.n != '0'

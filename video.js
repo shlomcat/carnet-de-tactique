@@ -499,9 +499,9 @@ function vQueueHTML(){
   const jobs=VID.jobs.slice().sort((a,b)=>(b.added||0)-(a.added||0)).slice(0,6);if(!jobs.length)return "";
   const g=ghCfg(),secret=jobs.some(j=>j.status==="error"&&/GEMINI_API_KEY/.test(j.msg||""));
   return `<div class="panel" style="margin-top:16px"><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between"><h3>Analyses dans le cloud</h3><a class="muted" style="font-size:.82rem" href="https://github.com/${esc(g.priv)}/actions" target="_blank" rel="noopener">détail sur GitHub</a></div>
-   <ul class="vjobs">${jobs.map(j=>{const [lb,cl]=JOBST[j.status]||[j.status,"muted"],vid=ytId(j.url);
+   <ul class="vjobs">${jobs.map(j=>{const [lb,cl]=j.status==="queued"&&j.retryAt?["nouvel essai prévu","warn"]:(JOBST[j.status]||[j.status,"muted"]),vid=ytId(j.url);
      return `<li><img src="https://i.ytimg.com/vi/${esc(vid)}/default.jpg" alt="" width="64" height="48" loading="lazy"><div><b>${esc(j.title||((j.author?j.author+" · ":"")+"vidéo "+(vid||"")))}</b> <span class="jst ${cl}">${j.status==="running"?'<span class="spin" aria-hidden="true"></span> ':""}${lb}${j.parts&&j.parts.total?` · ${j.parts.done}/${j.parts.total} partie${j.parts.total>1?"s":""}`:""}</span>
-      <div class="muted" style="font-size:.82rem">${esc(j.status==="running"||j.status==="queued"?(j.progress||(j.status==="queued"?"Démarrage dans le cloud d'ici une minute…":"")):(j.msg||""))}</div></div></li>`}).join("")}</ul>
+      <div class="muted" style="font-size:.82rem">${esc(j.status==="running"?(j.progress||""):j.status==="queued"?(j.retryAt&&j.msg?j.msg:"Démarrage dans le cloud d'ici une minute…"):(j.msg||""))}</div></div></li>`}).join("")}</ul>
    ${secret?`<p class="vstat err" style="margin:0">Il manque la clé Gemini du cloud : ouvre <a href="https://github.com/${esc(g.priv)}/settings/secrets/actions/new" target="_blank" rel="noopener">les secrets du dépôt</a>, nomme le secret <span class="mono">GEMINI_API_KEY</span>, colle ta clé Gemini, enregistre, puis relance la vidéo.</p>`:""}</div>`;
 }
 function vQueueRender(){const e=$("#vqueue");if(e)e.innerHTML=vQueueHTML()}

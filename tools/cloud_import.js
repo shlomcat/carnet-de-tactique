@@ -13,11 +13,23 @@ const fs = require("fs"), path = require("path"), { execFileSync, spawn } = requ
 const C = require("../video-core.js");
 const { Chess } = require("chess.js");
 C.setChess(Chess);
+if (process.env.CARNET_FAST) globalThis.VCORE_SPEED = 0.001; // tests uniquement
 
 const DIR = path.resolve(process.argv[2] || ".");
 const QF = path.join(DIR, "queue.json"), VF = path.join(DIR, "videos.json");
 const KEY = process.env.GEMINI_API_KEY || "";
 const STALE = 3 * 3600 * 1000; // une analyse « running » plus vieille que 3 h a été interrompue : on la reprend
+const MAX_TRIES = 4;            // essais d'une vidéo (un par exécution) avant de la déclarer en échec
+const WAITS = (process.env.CARNET_WAITS || "5,10,20").split(",").map(Number); // minutes d'attente quand Gemini est saturé
+// Gemini saturé ou quota atteint : passager, on attend plutôt que d'abandonner
+const transient = e => /saturé|high demand|overloaded|unavailable|try again|quota|resource.?exhausted|limite de débit|connexion/i.test(e && e.message || "");
+async function patient(what, fn) {
+  for (let k = 0; ; k++) {
+    try { return await fn(); }
+    catch (e) { if (!transient(e) || k >= WAITS.length) throw e;
+      console.log(`! ${what} : Gemini saturé, nouvel essai dans ${WAITS[k]} min`); await sleepMs(WAITS[k] * 60000 * (process.env.CARNET_FAST ? 0.0005 : 1)); }
+  }
+}
 
 if (process.env.GEMINI_MOCK) {
   const mock = require(path.resolve(process.env.GEMINI_MOCK)), real = global.fetch;
@@ -101,9 +113,9 @@ async function runJob(job, E) {
   let segs = [{ a: job.from ?? null, b: job.to ?? null, white: "", black: "", desc: "" }];
   if (split) {
     await progress("Repérage des parties de la vidéo…", {});
-    try { const t = await C.vToc(cfg, yurl, job.from ?? null, job.to ?? null, say); if (!vtitle) vtitle = t.title;
+    try { const t = await patient("repérage", () => C.vToc(cfg, yurl, job.from ?? null, job.to ?? null, say)); if (!vtitle) vtitle = t.title;
       if (t.games.length) segs = t.games; else if (t.dur) segs = [{ a: job.from || 0, b: t.dur, white: "", black: "", desc: "" }]; }
-    catch (e) { say("Repérage impossible : " + e.message); }
+    catch (e) { if (transient(e)) { e.retry = true; throw e; } say("Repérage impossible : " + e.message); }
   }
   const have = readJSON(VF, { videos: [] }).videos.filter(x => x.vid === id);
   const miss = C.vSegMissing(segs, split ? have : []), n = miss.total, done = [], failed = [];
@@ -113,7 +125,7 @@ async function runJob(job, E) {
     const k = g.i, label = n > 1 ? `Partie ${k + 1}/${n}${g.white || g.black ? ` (${g.white} – ${g.black})` : ""} · ` : "";
     try {
       await progress(label + "lecture par Gemini…");
-      const r = await C.vExtract(cfg, yurl, g.a, g.b, pgn, say, label);
+      const r = await patient(label + "lecture", () => C.vExtract(cfg, yurl, g.a, g.b, pgn, say, label));
       const { main, ms } = C.vBuild(r.raw, { pgn });
       if (!ms.length) throw new Error("aucun moment commenté trouvé");
       if (!vtitle && r.raw.titre) vtitle = r.raw.titre;
@@ -125,14 +137,15 @@ async function runJob(job, E) {
         const j = q.jobs.find(x => x.id === job.id); if (j) Object.assign(j, { parts: { done: done.length, total: miss.segs.length }, progress: `${label}${ms.length} moments, ${main.sans.length} coups vérifiés.`, updated: Date.now() });
       });
       last = Date.now();
-    } catch (e) { failed.push({ k: k + 1, msg: e.message }); console.log("! " + label + e.message); }
+    } catch (e) { failed.push({ k: k + 1, msg: e.message, retry: transient(e) }); console.log("! " + label + e.message); }
   }
   return { done, failed, n, skipped: miss.skipped };
 }
 
 async function main() {
   const q = readJSON(QF, null);
-  const todo = (q && q.jobs || []).filter(j => j.status === "queued" || (j.status === "running" && Date.now() - (j.updated || j.started || 0) > STALE));
+  const now = Date.now();
+  const todo = (q && q.jobs || []).filter(j => (j.status === "queued" && (j.retryAt || 0) <= now) || (j.status === "running" && now - (j.updated || j.started || 0) > STALE));
   if (!todo.length) { console.log("Aucune vidéo en attente."); return; }
   let E = null;
   try { E = new Engine(process.env.STOCKFISH || "stockfish"); await E.init(); } catch (e) { console.log("Stockfish indisponible : les positions ne seront pas évaluées."); E = null; }
@@ -143,8 +156,15 @@ async function main() {
       continue;
     }
     await setJob(job.id, { status: "running", started: Date.now(), progress: "Démarrage…", msg: "" }, "File d'analyse : démarrage");
+    const tries = (job.tries || 0) + 1;
+    // Gemini saturé malgré l'attente : la vidéo reste en file, reprise à la prochaine exécution (parties déjà lues conservées)
+    const later = async (why, nd) => {
+      if (tries >= MAX_TRIES) return setJob(job.id, { status: nd ? "partial" : "error", tries, msg: `Gemini est resté saturé après ${tries} essais (${why}). Relance la vidéo plus tard.`, progress: "", finished: Date.now() }, "File d'analyse : échec");
+      return setJob(job.id, { status: "queued", tries, retryAt: Date.now() + 2.5 * 3600e3, progress: "", msg: `Gemini saturé${nd ? ` après ${nd} partie${nd > 1 ? "s" : ""} lue${nd > 1 ? "s" : ""}` : ""} : nouvel essai automatique dans 3 h environ (essai ${tries}/${MAX_TRIES}).` }, "File d'analyse : nouvel essai prévu");
+    };
     try {
       const r = await runJob(job, E), nd = r.done.length, mom = r.done.reduce((a, v) => a + v.moments.length, 0);
+      if (r.failed.length && r.failed.every(f => f.retry)) { await later(r.failed.map(f => (r.n > 1 ? `partie ${f.k} : ` : "") + f.msg).join(" ; "), nd); continue; }
       let msg;
       if (!nd && !r.failed.length) msg = r.skipped ? `Les ${r.n} parties étaient déjà importées.` : "Rien à importer.";
       else if (!nd) throw new Error(r.failed.map(f => (r.n > 1 ? `partie ${f.k} : ` : "") + f.msg).join(" ; "));
@@ -152,6 +172,7 @@ async function main() {
         (r.failed.length ? `. Échec ${r.failed.map(f => `partie ${f.k} : ${f.msg}`).join(" ; ")} — relance la vidéo pour reprendre` : "") + ".";
       await setJob(job.id, { status: r.failed.length && nd ? "partial" : "done", msg, progress: "", finished: Date.now() }, "File d'analyse : terminé");
     } catch (e) {
+      if (e.retry || transient(e)) { await later(e.message, 0); continue; }
       await setJob(job.id, { status: "error", msg: e.message, progress: "", finished: Date.now() }, "File d'analyse : échec");
     }
   }

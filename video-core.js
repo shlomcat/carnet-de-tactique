@@ -67,7 +67,7 @@ async function geminiOnce(cfg,model,url,o,plain){
 // saturation (503, quota 429) : on réessaie, puis on bascule sur un autre modèle
 const busyErr=e=>e&&(e.net||e.status===503||e.status===429||e.status===500||/high demand|overloaded|unavailable|try again later|resource.?exhausted|quota/i.test(e.message||""));
 const missingErr=e=>e&&(e.status===404||/not found|is not supported|unknown model/i.test(e.message||""));
-const sleep=ms=>new Promise(z=>setTimeout(z,ms));
+const sleep=ms=>new Promise(z=>setTimeout(z,ms*(root.VCORE_SPEED||1))); // VCORE_SPEED : accélère les attentes dans les tests
 async function gemini(cfg,url,o,info){
   const models=[cfg.model,...["gemini-3.6-flash","gemini-3.8-flash","gemini-3.5-flash-lite"].filter(m=>m!==cfg.model)];
   let last=null;
