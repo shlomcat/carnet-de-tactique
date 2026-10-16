@@ -221,6 +221,7 @@ async function vImport(){
     vSave(vLib().map(x=>x.id===v.id?v:x));
     const e=$("#vstat");if(e){e.textContent=`Terminé : ${ms.length} moments, ${main.sans.length} coups vérifiés${v.game.fixed?` dont ${v.game.fixed} corrigé${v.game.fixed>1?"s":""}`:""}${v.game.cut?`, arrêt sur « ${v.game.cut} »`:""}${tok?` · ${Math.round(tok/1000)} k jetons`:""} · modèle ${usedModel}.`}
     if(VID.cur===v.id)vShowMoment(VID.m);
+    vAutoPush();
   }catch(e){say("Échec : "+e.message,1)}
   finally{VID.run=false;const b=$("#vgo");if(b)b.disabled=false}
 }
@@ -401,13 +402,16 @@ async function ghRead(repo,t){
   let d;try{d=JSON.parse(txt)}catch(e){throw new Error(`le fichier videos.json de ${repo} est illisible ; rien n'a été modifié`)}
   return {sha:j.sha,videos:Array.isArray(d.videos)?d.videos:[],api};
 }
-async function ghSync(kind){
+async function ghSync(kind,update){
   const g=ghCfg(),repo=kind==="pub"?g.repo:g.priv;
   if(!g.t)throw new Error("ajoute un jeton GitHub");if(!okRepo(repo))throw new Error("nom de dépôt invalide (format : propriétaire/dépôt)");
   if(kind==="priv"&&repo===g.repo)throw new Error("le dépôt privé doit être différent du dépôt public du site");
   const cur=await ghRead(repo,g.t),ids=new Set(cur.videos.map(x=>x.id));
-  const add=vLocal().filter(x=>!ids.has(x.id)&&(kind==="priv"||!isPerso(x))).map(x=>{const y=Object.assign({},x);delete y.remote;return y});
-  const all=cur.videos.concat(add);
+  const loc=vLocal().filter(x=>kind==="priv"||!isPerso(x)).map(x=>{const y=Object.assign({},x);delete y.remote;return y}),byId=new Map(loc.map(x=>[x.id,x]));
+  const add=loc.filter(x=>!ids.has(x.id));
+  // update : les vidéos locales remplacent leur version du dépôt (partie complétée, évaluations)
+  const all=(update?cur.videos.map(x=>byId.get(x.id)||x):cur.videos).concat(add);
+  if(!add.length&&!update)return all.length;
   if(kind==="pub"&&all.some(isPerso))throw new Error("le fichier public contient une vidéo en usage personnel ; rien n'a été modifié");
   const body={message:`Bibliothèque vidéos : ${all.length} vidéo${all.length>1?"s":""} (+${add.length})`,content:b64(JSON.stringify({format:"carnet-videos",version:1,videos:all},null,1))};
   if(cur.sha)body.sha=cur.sha;
@@ -515,6 +519,7 @@ async function vContinue(id){
     vSave(vLocal().map(x=>x.id===v.id?v:x));
     VID.run=false;renderVideo();
     const s2=$("#vstat");if(s2){s2.hidden=false;s2.className="vstat";s2.textContent=`Partie complétée : ${best.sans.length} coups vérifiés${best.bad?` (nouvel arrêt sur « ${best.bad.san} »)`:""} · modèle ${model}.`}
+    vAutoPush(true);
   }catch(e){say("Échec : "+e.message,1)}
   finally{VID.run=false;const b2=$("#vcont");if(b2)b2.disabled=false}
 }
@@ -541,3 +546,11 @@ function vInitDb(){
   }).catch(()=>{});
 }
 vInitDb();document.addEventListener("DOMContentLoaded",vInitDb);setTimeout(vInitDb,1500);
+
+// envoi automatique au dépôt privé après chaque import ou complément (si jeton et dépôt configurés)
+async function vAutoPush(update){
+  const g=ghCfg();if(!g.t||!okRepo(g.priv))return;
+  const note=t=>{const e=$("#vstat");if(e&&!e.hidden)e.textContent=e.textContent.replace(/ · (Envoi|Envoyée|Envoi impossible)[^·]*$/,"")+" · "+t};
+  try{note("Envoi au dépôt privé…");const n=await ghSync("priv",update);note(`Envoyée au dépôt privé (${n} vidéo${n>1?"s":""})`)}
+  catch(e){note("Envoi impossible au dépôt privé : "+e.message)}
+}
