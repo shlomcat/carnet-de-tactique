@@ -266,7 +266,9 @@ async function vImport(){
         const r=await vExtract(cfg,yurl,g.a,g.b,pgn,say,label);tok+=r.tok;
         const {main,ms}=vBuild(r.raw,{pgn});
         if(!ms.length)throw new Error("aucun moment commenté trouvé");
-        const white=r.raw.partie.blancs||g.white,black=r.raw.partie.noirs||g.black,base=vtitle||r.raw.titre||"Vidéo "+id;
+        // même titre de vidéo pour toutes les parties : celui du formulaire, du repérage, ou à défaut celui lu dans la première partie
+        if(!vtitle&&r.raw.titre)vtitle=r.raw.titre;
+        const white=r.raw.partie.blancs||g.white,black=r.raw.partie.noirs||g.black,base=vtitle||"Vidéo "+id;
         const v={id:id+"-"+(n>1?"p"+(k+1)+"-":"")+Date.now().toString(36),vid:id,url:yurl,at:Date.now(),model:r.model,tokens:r.tok,
           title:n>1?`${base} — partie ${k+1}${white||black?` : ${white} – ${black}`:""}`:base,author:form.author,license:form.license,
           seg:g.a!=null||g.b!=null?{from:g.a,to:g.b}:null,part:n>1?{k:k+1,n}:null,
