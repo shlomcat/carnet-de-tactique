@@ -381,6 +381,9 @@ function ghPanelHTML(){
 function ghBind(){
   const save=()=>{store.set(VID.gh,{t:$("#ghtok").value.trim(),repo:$("#ghrepo").value.trim(),priv:$("#ghpriv").value.trim()})};
   $("#ghtok").onchange=()=>{save();vLoadPriv()};$("#ghpriv").onchange=()=>{save();vLoadPriv()};$("#ghrepo").onchange=save;
+  // active les boutons dès la saisie, sans attendre de quitter le champ
+  const live=()=>{save();const n=ghCounts(),t=$("#ghtok").value.trim();$("#ghsync").disabled=!(t&&okRepo($("#ghpriv").value.trim())&&n.priv);$("#ghpub").disabled=!(t&&n.pub)};
+  ["#ghtok","#ghpriv","#ghrepo"].forEach(k=>$(k).addEventListener("input",live));live();
   if($("#ghdel"))$("#ghdel").onclick=()=>{store.set(VID.gh,Object.assign(ghCfg(),{t:""}));VID.priv=[];VID.sig=null;renderVideo()};
   const run=(btn,kind)=>async()=>{save();const st=$("#ghstat"),b=$(btn);b.disabled=true;st.textContent="Envoi vers GitHub…";
     try{const n=await ghSync(kind);st.textContent=kind==="pub"?`Publié : ${n} vidéo${n>1?"s":""} dans le dépôt public. Le site sera à jour dans une minute environ.`:`Enregistré : ${n} vidéo${n>1?"s":""} dans le dépôt privé.`;setTimeout(renderVideo,1500)}
