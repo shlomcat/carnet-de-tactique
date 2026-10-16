@@ -317,7 +317,7 @@ async function ghPublish(){
   const g=ghCfg();if(!g.t)throw new Error("ajoute un jeton GitHub");if(!/^[\w.-]+\/[\w.-]+$/.test(g.repo))throw new Error("dépôt invalide");
   const api=`https://api.github.com/repos/${g.repo}/contents/videos.json`,H={Authorization:"Bearer "+g.t,Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"};
   let sha=null,remote=[];
-  const r0=await fetch(api+"?ref=main",{headers:H,cache:"no-store"});
+  let r0;try{r0=await fetch(api+"?ref=main",{headers:H,cache:"no-store"})}catch(e){throw new Error("impossible de joindre GitHub depuis cette page : publie depuis le site shlomcat.github.io/carnet-de-tactique")}
   if(r0.ok){const j=await r0.json();sha=j.sha;try{remote=(JSON.parse(unb64(j.content)).videos)||[]}catch(e){throw new Error("le fichier videos.json du dépôt est illisible ; rien n'a été modifié")}}
   else if(r0.status!==404){throw new Error(r0.status===401?"jeton refusé":r0.status===403?"jeton sans accès à ce dépôt":"GitHub "+r0.status)}
   const ids=new Set(remote.map(x=>x.id)),add=vLocal().filter(x=>!ids.has(x.id)).map(x=>{const y=Object.assign({},x);delete y.shared;return y});
