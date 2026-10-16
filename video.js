@@ -126,6 +126,7 @@ function renderVideo(){
      <textarea id="vpgn" rows="4" class="mono vta" placeholder="1. e4 c6 2. d4 d5 …"></textarea></details>
     <label class="chk" id="vokl"><input type="checkbox" id="vok"> Je confirme : la vidéo est sous licence CC BY, ou j'ai l'accord de son auteur.</label>
     <p class="muted" id="vpersol" style="margin:0;font-size:.82rem" hidden>Usage personnel : la vidéo et ses exemples restent dans ce navigateur et dans ton dépôt privé si tu en configures un ; ils ne sont jamais publiés dans le dépôt public du site.</p>
+    <div class="fld"><label for="vwhere">Où lancer l'analyse</label><select id="vwhere"><option value="cloud">Dans le cloud : continue même ordinateur éteint</option><option value="local">Dans ce navigateur : garde la page ouverte</option></select></div>
     <div><button class="btn primary" id="vgo">Analyser la vidéo</button></div>
     <div id="vstat" class="vstat" hidden></div>
     <p class="muted" style="margin:0;font-size:.78rem">Une longue vidéo est d'abord parcourue pour repérer ses parties, puis chaque partie est lue en passages de 8 minutes et enregistrée séparément. Compte 10 à 30 minutes pour une vidéo d'une heure : garde la page ouverte (l'écran reste allumé pendant l'analyse). Avec un PGN, la vidéo est traitée comme une seule partie. Sur YouTube, la licence s'affiche sous la description (« Licence Creative Commons Attribution »).</p>
@@ -135,9 +136,10 @@ function renderVideo(){
     <div class="fld"><label for="vkey">Clé API Google AI Studio</label><input id="vkey" type="password" autocomplete="off" spellcheck="false" value="${esc(cfg.k)}" placeholder="AIza…"></div>
     <div class="fld"><label for="vmodel">Modèle</label><select id="vmodel">${GMODELS.map(([id,l])=>`<option value="${id}"${id===cfg.model?" selected":""}>${esc(l)}</option>`).join("")}</select></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="vksave">Enregistrer</button>${cfg.k?`<button class="btn" id="vkdel">Oublier la clé</button>`:""}</div>
-    <p class="muted" style="margin:0;font-size:.8rem">Crée une clé gratuite sur <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>. Elle est gardée seulement dans ce navigateur et envoyée uniquement à Google. ${cfg.k?"<b>Clé enregistrée.</b>":""}</p>
+    <p class="muted" style="margin:0;font-size:.8rem">Crée une clé gratuite sur <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>. Elle est gardée seulement dans ce navigateur et envoyée uniquement à Google. Pour l'analyse dans le cloud, enregistre-la aussi une fois dans <a href="https://github.com/${esc(ghCfg().priv)}/settings/secrets/actions/new" target="_blank" rel="noopener">les secrets de ton dépôt privé</a> sous le nom <span class="mono">GEMINI_API_KEY</span>. ${cfg.k?"<b>Clé enregistrée.</b>":""}</p>
    </div>
   </div>
+  <div id="vqueue">${vQueueHTML()}</div>
   <div class="panel" style="margin-top:16px">
    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between">
     <h3>Bibliothèque · ${lib.length} vidéo${lib.length>1?"s":""}, ${n} exemple${n>1?"s":""}${VID.dbh?` · base Claude : ${VID.dbv.length}`:""}</h3>
@@ -154,7 +156,8 @@ function renderVideo(){
   $("#vksave").onclick=()=>{store.set(VID.key,kv());renderVideo()};
   $("#vmodel").onchange=()=>store.set(VID.key,Object.assign(vCfg(),{model:$("#vmodel").value}));
   if($("#vkdel"))$("#vkdel").onclick=()=>{try{localStorage.removeItem(VID.key)}catch(e){}renderVideo()};
-  $("#vgo").onclick=()=>{if($("#vkey").value.trim()&&$("#vkey").value.trim()!==vCfg().k)store.set(VID.key,kv());vImport()};
+  $("#vwhere").value=store.get("carnet:vwhere")||"cloud";$("#vwhere").onchange=()=>store.set("carnet:vwhere",$("#vwhere").value);
+  $("#vgo").onclick=()=>{if($("#vkey").value.trim()&&$("#vkey").value.trim()!==vCfg().k)store.set(VID.key,kv());$("#vwhere").value==="cloud"?vQueue():vImport()};
   box.querySelectorAll("[data-v]").forEach(b=>b.onclick=()=>{VID.cur=b.dataset.v;VID.m=0;renderVideo()});
   $("#vexp").onclick=vExport;ghBind();
   $("#vlic").onchange=()=>{const p=$("#vlic").value==="perso";$("#vokl").hidden=p;$("#vpersol").hidden=!p};
@@ -270,20 +273,20 @@ const b64=str=>btoa(unescape(encodeURIComponent(str)));
 const unb64=str=>decodeURIComponent(escape(atob(String(str).replace(/\s/g,""))));
 const okRepo=r=>/^[\w.-]+\/[\w.-]+$/.test(r||"");
 function ghH(t,raw){return {Authorization:"Bearer "+t,Accept:raw?"application/vnd.github.raw+json":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"}}
-async function ghRead(repo,t){
-  const api=`https://api.github.com/repos/${repo}/contents/videos.json`;
+async function ghRead(repo,t,file){
+  file=file||"videos.json";const api=`https://api.github.com/repos/${repo}/contents/${file}`;
   let r;try{r=await fetch(api,{headers:ghH(t),cache:"no-store"})}catch(e){throw new Error("impossible de joindre GitHub depuis cette page : utilise le site shlomcat.github.io/carnet-de-tactique")}
   if(r.status===404){
     // 404 : soit le fichier n'existe pas encore, soit le jeton ne voit pas le dépôt (GitHub cache les dépôts privés)
     const q=await fetch(`https://api.github.com/repos/${repo}`,{headers:ghH(t),cache:"no-store"}).catch(()=>null);
     if(!q||!q.ok)throw new Error(`ton jeton n'a pas accès au dépôt ${repo}. Sur GitHub, modifie le jeton (Settings › Developer settings › Fine-grained tokens) et ajoute ce dépôt dans « Repository access »`);
-    return {sha:null,videos:[],api}}
+    return {sha:null,videos:[],jobs:[],api}}
   if(!r.ok)throw new Error(r.status===401?"jeton refusé":r.status===403?`jeton sans accès à ${repo}`:"GitHub "+r.status);
   const j=await r.json();let txt=null;
   try{txt=j.content?unb64(j.content):null}catch(e){}
   if(txt==null){const q=await fetch(api,{headers:ghH(t,1),cache:"no-store"});if(!q.ok)throw new Error("GitHub "+q.status);txt=await q.text()}
-  let d;try{d=JSON.parse(txt)}catch(e){throw new Error(`le fichier videos.json de ${repo} est illisible ; rien n'a été modifié`)}
-  return {sha:j.sha,videos:Array.isArray(d.videos)?d.videos:[],api};
+  let d;try{d=JSON.parse(txt)}catch(e){throw new Error(`le fichier ${file} de ${repo} est illisible ; rien n'a été modifié`)}
+  return {sha:j.sha,videos:Array.isArray(d.videos)?d.videos:[],jobs:Array.isArray(d.jobs)?d.jobs:[],api};
 }
 async function ghSync(kind,update){
   const g=ghCfg(),repo=kind==="pub"?g.repo:g.priv;
@@ -374,7 +377,7 @@ function videoContext(fen){
    L.map(x=>`- ressemblance ${Math.round(x.sc*100)} %${x.flip?" (couleurs inversées : l'exemple concerne l'autre camp)":""} ; position de l'exemple (FEN) : ${x.m.fen}${x.m.idea?` ; thème : ${x.m.idea}`:""} ; explication du commentateur : ${x.m.comment}${x.m.vars.length?` ; variantes citées : ${x.m.vars.map(v=>v.sans.join(" ")+(v.verdict?" ("+v.verdict+")":"")).join(" ; ")}`:""} ; source : ${vSrc(x)}`).join("\n")+"\n";
 }
 // après le script principal (store, RV… sont définis plus bas dans la page)
-if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",()=>{vLoadShared();vLoadPriv()});else{vLoadShared();vLoadPriv()}
+if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",()=>{vLoadShared();vLoadPriv();vPoll(true)});else{vLoadShared();vLoadPriv();vPoll(true)}
 
 /* ---------- relire la suite de la partie après un coup illisible ---------- */
 async function vContinue(id){
@@ -462,3 +465,53 @@ async function vAwake(on){
 }
 // le verrou saute quand l'onglet est masqué : on le reprend au retour si l'analyse tourne encore
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&VID.awake&&VID.run)vAwake(true)});
+
+/* ---------- analyse dans le cloud : file d'attente queue.json du dépôt privé, traitée par GitHub Actions ---------- */
+VID.jobs=[];
+async function vQueue(){
+  const g=ghCfg(),url=$("#vurl").value.trim(),id=ytId(url),st=$("#vstat");
+  const say=(t,err)=>{st.hidden=false;st.className="vstat"+(err?" err":"");st.textContent=t};
+  if(!id)return say("Lien YouTube non reconnu.",1);
+  if(!g.t||!okRepo(g.priv))return say("L'analyse dans le cloud passe par ton dépôt privé : colle ton jeton GitHub en bas de cette page (ou choisis « Dans ce navigateur »).",1);
+  if($("#vlic").value!=="perso"&&!$("#vok").checked)return say("Coche la case pour confirmer la licence CC BY ou l'accord de l'auteur. Sinon, choisis « Usage personnel ».",1);
+  const from=toSec($("#vfrom").value),to=toSec($("#vto").value),pgn=pgnMoves($("#vpgn").value);
+  if($("#vpgn").value.trim()&&!(pgn&&pgn.length))return say("Le PGN fourni est illisible.",1);
+  if(from!=null&&to!=null&&to<=from)return say("La fin doit être après le début.",1);
+  const job={id:"j"+Date.now().toString(36),url:"https://www.youtube.com/watch?v="+id,author:$("#vauthor").value.trim(),license:$("#vlic").value,title:$("#vtitle").value.trim(),
+    from,to,split:$("#vsplit").checked,pgn:pgn&&pgn.length?pgn:null,model:vCfg().model,status:"queued",added:Date.now()};
+  const b=$("#vgo");b.disabled=true;say("Envoi de la vidéo dans la file d'analyse…");
+  try{
+    for(let k=0;k<3;k++){
+      const cur=await ghRead(g.priv,g.t,"queue.json"),jobs=cur.jobs.filter(j=>!(j.status==="queued"&&j.url===job.url)).concat([job]).slice(-40);
+      const body={message:`File d'analyse : ${job.title||job.url}`.slice(0,120),content:b64(JSON.stringify({format:"carnet-queue",version:1,jobs},null,1))};if(cur.sha)body.sha=cur.sha;
+      const r=await fetch(cur.api,{method:"PUT",headers:Object.assign({"Content-Type":"application/json"},ghH(g.t)),body:JSON.stringify(body)});
+      if(r.ok){VID.jobs=jobs;break}
+      if(r.status===409&&k<2){await sleep(1500);continue}
+      const j=await r.json().catch(()=>({}));throw new Error(r.status===404||r.status===403?`ton jeton ne peut pas écrire dans ${g.priv} (permission « Contents » en « Read and write »)`:(j.message||"GitHub "+r.status));
+    }
+    say("✓ Vidéo ajoutée à la file. L'analyse démarre dans le cloud d'ici une minute : tu peux fermer la page ou éteindre l'ordinateur. Les parties apparaîtront dans ta bibliothèque au fur et à mesure.");
+    $("#vurl").value="";vQueueRender();vPoll(true);
+  }catch(e){say("Échec : "+e.message,1)}
+  finally{b.disabled=false}
+}
+const JOBST={queued:["en attente","muted"],running:["en cours","run"],done:["terminée","ok"],partial:["terminée en partie","warn"],error:["échec","err"]};
+function vQueueHTML(){
+  const jobs=VID.jobs.slice().sort((a,b)=>(b.added||0)-(a.added||0)).slice(0,6);if(!jobs.length)return "";
+  const g=ghCfg(),secret=jobs.some(j=>j.status==="error"&&/GEMINI_API_KEY/.test(j.msg||""));
+  return `<div class="panel" style="margin-top:16px"><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between"><h3>Analyses dans le cloud</h3><a class="muted" style="font-size:.82rem" href="https://github.com/${esc(g.priv)}/actions" target="_blank" rel="noopener">détail sur GitHub</a></div>
+   <ul class="vjobs">${jobs.map(j=>{const [lb,cl]=JOBST[j.status]||[j.status,"muted"],vid=ytId(j.url);
+     return `<li><img src="https://i.ytimg.com/vi/${esc(vid)}/default.jpg" alt="" width="64" height="48" loading="lazy"><div><b>${esc(j.title||((j.author?j.author+" · ":"")+"vidéo "+(vid||"")))}</b> <span class="jst ${cl}">${j.status==="running"?'<span class="spin" aria-hidden="true"></span> ':""}${lb}${j.parts&&j.parts.total?` · ${j.parts.done}/${j.parts.total} partie${j.parts.total>1?"s":""}`:""}</span>
+      <div class="muted" style="font-size:.82rem">${esc(j.status==="running"||j.status==="queued"?(j.progress||(j.status==="queued"?"Démarrage dans le cloud d'ici une minute…":"")):(j.msg||""))}</div></div></li>`}).join("")}</ul>
+   ${secret?`<p class="vstat err" style="margin:0">Il manque la clé Gemini du cloud : ouvre <a href="https://github.com/${esc(g.priv)}/settings/secrets/actions/new" target="_blank" rel="noopener">les secrets du dépôt</a>, nomme le secret <span class="mono">GEMINI_API_KEY</span>, colle ta clé Gemini, enregistre, puis relance la vidéo.</p>`:""}</div>`;
+}
+function vQueueRender(){const e=$("#vqueue");if(e)e.innerHTML=vQueueHTML()}
+// suivi : relit la file toutes les 20 s tant qu'une analyse est en attente ou en cours
+async function vPoll(force){
+  clearTimeout(VID.pollT);const g=ghCfg();if(!g.t||!okRepo(g.priv))return;
+  if(!force&&document.visibilityState!=="visible"){VID.pollT=setTimeout(vPoll,20000);return}
+  try{const d=await ghRead(g.priv,g.t,"queue.json"),before=JSON.stringify(VID.jobs.map(j=>[j.id,j.status,j.parts&&j.parts.done]));
+    VID.jobs=d.jobs;if(JSON.stringify(VID.jobs.map(j=>[j.id,j.status,j.parts&&j.parts.done]))!==before)vLoadPriv();
+    vQueueRender();}catch(e){}
+  if(VID.jobs.some(j=>j.status==="queued"||j.status==="running"))VID.pollT=setTimeout(vPoll,20000);
+}
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&VID.jobs.some(j=>j.status==="queued"||j.status==="running"))vPoll(true)});
