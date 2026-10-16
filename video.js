@@ -351,7 +351,7 @@ async function vPlayVar(m,j){
 function videoExamples(){return vLib().flatMap(v=>v.moments.filter(m=>m.fen&&m.comment).map(m=>({fen:m.fen,comment:m.comment,idea:m.idea,vars:m.vars.map(x=>x.sans.join(" ")),ev:m.ev,src:`${v.author||"?"} — ${v.title} (${m.t}) ${v.url}&t=${m.sec}s`})))}
 
 /* ---------- dépôts GitHub : fichier public du site et dépôt privé de données ---------- */
-function ghCfg(){return Object.assign({t:"",repo:"shlomcat/carnet-de-tactique",priv:""},store.get(VID.gh)||{})}
+function ghCfg(){const g=Object.assign({t:"",repo:"shlomcat/carnet-de-tactique",priv:""},store.get(VID.gh)||{});if(!g.priv)g.priv="shlomcat/carnet-data";return g}
 function ghCounts(){
   const L=vLocal(),pub=new Set(VID.shared.map(x=>x.id)),prv=new Set(VID.priv.map(x=>x.id));
   return {pub:L.filter(x=>!isPerso(x)&&!pub.has(x.id)).length,perso:L.filter(isPerso).length,priv:L.filter(x=>!prv.has(x.id)).length};
@@ -365,7 +365,7 @@ function ghPanelHTML(){
    <div class="ghbox">
     <div><b>Dépôt privé de données</b> <span class="muted">· recommandé, accepte toutes les vidéos, y compris en usage personnel</span></div>
     <div class="fld"><label for="ghpriv">Dépôt privé <small class="muted">(à créer sur GitHub, visibilité « Private »)</small></label><input id="ghpriv" style="width:100%;box-sizing:border-box" value="${esc(g.priv)}" autocomplete="off" spellcheck="false" class="mono" placeholder="shlomcat/carnet-data"></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn primary" id="ghsync"${g.priv&&n.priv?"":" disabled"}>${n.priv?`Envoyer ${n.priv} vidéo${n.priv>1?"s":""} au dépôt privé`:"Rien de nouveau à envoyer"}</button><span class="muted" style="font-size:.85rem">${g.priv?`${VID.priv.length} vidéo${VID.priv.length>1?"s":""} dans le dépôt privé`:"Aucun dépôt privé configuré"}</span></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn primary" id="ghsync"${g.priv&&n.priv?"":" disabled"}>${n.priv?`Envoyer ${n.priv} vidéo${n.priv>1?"s":""} au dépôt privé`:"Rien de nouveau à envoyer"}</button><span class="muted" style="font-size:.85rem" id="ghprivst">${!g.t?"Colle ton jeton GitHub ci-dessus":VID.privErr?"Dépôt privé : "+esc(VID.privErr):`${VID.priv.length} vidéo${VID.priv.length>1?"s":""} dans le dépôt privé`}</span></div>
     <span class="muted" style="font-size:.78rem">Le site relit ce dépôt à chaque ouverture, sur chaque appareil où tu as saisi le jeton. Personne d'autre n'y a accès. La version Claude du carnet ne peut pas le lire : utilise « Exporter » puis « Importer un fichier » là-bas.</span>
    </div>
    <div class="ghbox">
@@ -382,7 +382,7 @@ function ghBind(){
   const save=()=>{store.set(VID.gh,{t:$("#ghtok").value.trim(),repo:$("#ghrepo").value.trim(),priv:$("#ghpriv").value.trim()})};
   $("#ghtok").onchange=()=>{save();vLoadPriv()};$("#ghpriv").onchange=()=>{save();vLoadPriv()};$("#ghrepo").onchange=save;
   // active les boutons dès la saisie, sans attendre de quitter le champ
-  const live=()=>{save();const n=ghCounts(),t=$("#ghtok").value.trim();$("#ghsync").disabled=!(t&&okRepo($("#ghpriv").value.trim())&&n.priv);$("#ghpub").disabled=!(t&&n.pub)};
+  const live=()=>{save();const n=ghCounts(),t=$("#ghtok").value.trim();$("#ghsync").disabled=!(t&&okRepo($("#ghpriv").value.trim())&&n.priv);if(!t)$("#ghprivst").textContent="Colle ton jeton GitHub ci-dessus";$("#ghpub").disabled=!(t&&n.pub)};
   ["#ghtok","#ghpriv","#ghrepo"].forEach(k=>$(k).addEventListener("input",live));live();
   if($("#ghdel"))$("#ghdel").onclick=()=>{store.set(VID.gh,Object.assign(ghCfg(),{t:""}));VID.priv=[];VID.sig=null;renderVideo()};
   const run=(btn,kind)=>async()=>{save();const st=$("#ghstat"),b=$(btn);b.disabled=true;st.textContent="Envoi vers GitHub…";
@@ -432,7 +432,7 @@ function vLoadShared(){
 }
 function vLoadPriv(){
   const g=ghCfg();if(!g.t||!okRepo(g.priv)){VID.priv=[];return Promise.resolve()}
-  return ghRead(g.priv,g.t).then(d=>{VID.priv=d.videos;vRefresh()}).catch(e=>{VID.privErr=e.message;console.warn("dépôt privé :",e.message)});
+  return ghRead(g.priv,g.t).then(d=>{VID.priv=d.videos;VID.privErr=null;vRefresh()}).catch(e=>{VID.privErr=e.message;console.warn("dépôt privé :",e.message);vRefresh()});
 }
 
 /* ---------- exemples similaires : comparaison de positions ---------- */
