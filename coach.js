@@ -191,6 +191,11 @@ async function coStart(){
   catch(e){say("Échec : "+(e.message||e),1)}
   finally{CO.run=false;const b=$("#cogo");if(b)b.disabled=false}
 }
+// depuis le Bilan : une leçon sur un point faible, préparée tout de suite
+function coLaunch(x){
+  if(!x)return;CO.prefill={ask:x.ask,moves:x.moves||"",camp:x.camp||""};CO.cur=null;tab("coach");renderCoach();
+  if(!$("#cogo").disabled)coStart();
+}
 // depuis la Revue : « les plans de cette position avec le coach »
 function coFromRevue(p){
   if(typeof RV==="undefined"||!RV.g)return;
