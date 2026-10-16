@@ -3,15 +3,21 @@
    Gemini regarde la vidéo et renvoie la partie + les commentaires horodatés ;
    chess.js vérifie chaque coup, Stockfish évalue chaque position retenue. */
 "use strict";
-const VID={key:"carnet:gemini",lib:"carnet:videos",gh:"carnet:github",shared:[],cur:null,m:0,cg:null,run:false,vfen:null};
+const VID={key:"carnet:gemini",lib:"carnet:videos",gh:"carnet:github",shared:[],priv:[],cur:null,m:0,cg:null,run:false,vfen:null};
 const GMODELS=[["gemini-3.8-flash","Gemini 3.8 Flash (recommandé)"],["gemini-4-argon","Gemini 4 Argon (plus fin, plus lent)"],["gemini-3.6-flash","Gemini 3.6 Flash"],["gemini-3.5-flash-lite","Gemini 3.5 Flash-Lite (rapide)"]];
 const START_FEN="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 function vCfg(){return Object.assign({k:"",model:GMODELS[0][0]},store.get(VID.key)||{})}
 function vLocal(){return store.get(VID.lib)||[]}
 // bibliothèque = vidéos de ce navigateur + vidéos partagées (fichier videos.json du dépôt)
-function vLib(){const L=vLocal(),ids=new Set(L.map(x=>x.id));return L.concat(VID.shared.filter(x=>!ids.has(x.id)).map(x=>Object.assign(x,{shared:true})))}
-function vSave(lib){store.set(VID.lib,lib.filter(x=>!x.shared));VID.sig=null}
+// bibliothèque = vidéos de ce navigateur + dépôt privé de données + fichier public du site
+function vLib(){const L=vLocal(),ids=new Set(L.map(x=>x.id)),out=L.slice();
+  for(const [src,f] of [[VID.priv,"remote"],[VID.shared,"remote"]])for(const x of src)if(!ids.has(x.id)){ids.add(x.id);out.push(Object.assign(x,{[f]:true}))}
+  return out}
+const isPerso=x=>x&&x.license==="perso";
+const LIC={"CC BY":"licence CC BY",accord:"accord de l'auteur",perso:"usage personnel"};
+function vWhere(x){const w=[];if(VID.shared.some(y=>y.id===x.id))w.push("publique");if(VID.priv.some(y=>y.id===x.id))w.push("dépôt privé");if(vLocal().some(y=>y.id===x.id)&&!w.length)w.push("sur cet appareil");return w.join(" + ")}
+function vSave(lib){store.set(VID.lib,lib.filter(x=>!x.remote));VID.sig=null}
 function ytId(u){const m=String(u||"").match(/(?:youtu\.be\/|v=|\/shorts\/|\/live\/|\/embed\/)([\w-]{11})/);return m?m[1]:null}
 function toSec(s){if(s==null||s==="")return null;if(typeof s==="number")return s;const p=String(s).trim().split(":").map(Number);if(p.some(isNaN))return null;return p.reduce((a,b)=>a*60+b,0)}
 function fmtT(s){s=Math.max(0,Math.round(s||0));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=String(s%60).padStart(2,"0");return h?`${h}:${String(m).padStart(2,"0")}:${x}`:`${m}:${x}`}
@@ -133,7 +139,7 @@ async function vImport(){
   const say=(t,err)=>{st.hidden=false;st.className="vstat"+(err?" err":"");st.textContent=t};
   if(!cfg.k)return say("Ajoute d'abord ta clé Gemini ci-dessus.",1);
   if(!id)return say("Lien YouTube non reconnu.",1);
-  if(!$("#vok").checked)return say("Coche la case sur les droits de la vidéo : seules les vidéos sous licence CC BY, ou avec l'accord de leur auteur, peuvent être importées.",1);
+  if($("#vlic").value!=="perso"&&!$("#vok").checked)return say("Coche la case pour confirmer la licence CC BY ou l'accord de l'auteur. Sinon, choisis « Usage personnel » : la vidéo ne sera jamais publiée dans le dépôt public.",1);
   if(VID.run)return;
   const from=toSec($("#vfrom").value),to=toSec($("#vto").value),pgn=pgnMoves($("#vpgn").value);
   if($("#vpgn").value.trim()&&!(pgn&&pgn.length))return say("Le PGN fourni est illisible.",1);
@@ -190,7 +196,7 @@ function renderVideo(){
     <div class="fld"><label for="vurl">Lien YouTube (vidéo publique)</label><input id="vurl" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" spellcheck="false"></div>
     <div class="vrow">
      <div class="fld"><label for="vauthor">Auteur / chaîne</label><input id="vauthor" autocomplete="off"></div>
-     <div class="fld"><label for="vlic">Droits</label><select id="vlic"><option value="CC BY">Licence CC BY</option><option value="accord">Accord de l'auteur</option></select></div>
+     <div class="fld"><label for="vlic">Droits</label><select id="vlic"><option value="CC BY">Licence CC BY</option><option value="accord">Accord de l'auteur</option><option value="perso">Usage personnel (jamais publiée)</option></select></div>
     </div>
     <div class="vrow">
      <div class="fld"><label for="vtitle">Titre <small class="muted">(facultatif)</small></label><input id="vtitle" autocomplete="off"></div>
@@ -199,7 +205,8 @@ function renderVideo(){
     </div>
     <details><summary class="muted" style="cursor:pointer;font-size:.88rem">PGN de la partie, si tu le connais (plus fiable)</summary>
      <textarea id="vpgn" rows="4" class="mono vta" placeholder="1. e4 c6 2. d4 d5 …"></textarea></details>
-    <label class="chk"><input type="checkbox" id="vok"> La vidéo est sous licence CC BY, ou j'ai l'accord de son auteur.</label>
+    <label class="chk" id="vokl"><input type="checkbox" id="vok"> Je confirme : la vidéo est sous licence CC BY, ou j'ai l'accord de son auteur.</label>
+    <p class="muted" id="vpersol" style="margin:0;font-size:.82rem" hidden>Usage personnel : la vidéo et ses exemples restent dans ce navigateur et dans ton dépôt privé si tu en configures un ; ils ne sont jamais publiés dans le dépôt public du site.</p>
     <div><button class="btn primary" id="vgo">Analyser la vidéo</button></div>
     <div id="vstat" class="vstat" hidden></div>
     <p class="muted" style="margin:0;font-size:.78rem">Pour une longue vidéo, indique début et fin : elle est découpée en passages de 8 minutes, plus précis. Sur YouTube, la licence s'affiche sous la description (« Licence Creative Commons Attribution »).</p>
@@ -217,7 +224,7 @@ function renderVideo(){
     <h3>Bibliothèque · ${lib.length} vidéo${lib.length>1?"s":""}, ${n} exemple${n>1?"s":""}</h3>
     <div style="display:flex;gap:8px"><button class="btn" id="vexp"${lib.length?"":" disabled"}>Exporter</button><label class="btn" for="vimp" style="display:inline-block">Importer un fichier<input type="file" id="vimp" accept="application/json,.json" hidden></label></div>
    </div>
-   ${lib.length?`<ul class="vlist">${lib.map(x=>`<li><button class="vitem" data-v="${esc(x.id)}"><img src="https://i.ytimg.com/vi/${esc(x.vid)}/mqdefault.jpg" alt="" loading="lazy" width="120" height="68"><span><b>${esc(x.title)}</b><br><span class="muted">${esc(x.author||"auteur non renseigné")} · ${x.moments.length} moments · ${x.game.sans.length} coups${VID.shared.some(y=>y.id===x.id)?" · <b>partagée</b>":" · sur cet appareil"}${x.game.white||x.game.black?` · ${esc(x.game.white)}–${esc(x.game.black)}`:""}</span></span></button></li>`).join("")}</ul>`
+   ${lib.length?`<ul class="vlist">${lib.map(x=>`<li><button class="vitem" data-v="${esc(x.id)}"><img src="https://i.ytimg.com/vi/${esc(x.vid)}/mqdefault.jpg" alt="" loading="lazy" width="120" height="68"><span><b>${esc(x.title)}</b><br><span class="muted">${esc(x.author||"auteur non renseigné")} · ${x.moments.length} moment${x.moments.length>1?"s":""} · ${x.game.sans.length} coup${x.game.sans.length>1?"s":""} · ${esc(LIC[x.license]||x.license||"")} · <b>${esc(vWhere(x))}</b>${x.game.white||x.game.black?` · ${esc(x.game.white)}–${esc(x.game.black)}`:""}</span></span></button></li>`).join("")}</ul>`
     :`<p class="muted" style="margin:0">Aucune vidéo importée pour l'instant.</p>`}
   </div>
   ${ghPanelHTML(lib)}`;
@@ -228,6 +235,7 @@ function renderVideo(){
   $("#vgo").onclick=()=>{if($("#vkey").value.trim()&&$("#vkey").value.trim()!==vCfg().k)store.set(VID.key,kv());vImport()};
   box.querySelectorAll("[data-v]").forEach(b=>b.onclick=()=>{VID.cur=b.dataset.v;VID.m=0;renderVideo()});
   $("#vexp").onclick=vExport;ghBind();
+  $("#vlic").onchange=()=>{const p=$("#vlic").value==="perso";$("#vokl").hidden=p;$("#vpersol").hidden=!p};
   $("#vimp").onchange=e=>{const f=e.target.files[0];if(!f)return;f.text().then(t=>{const d=JSON.parse(t),arr=Array.isArray(d)?d:d.videos||[];const lib=vLib(),ids=new Set(lib.map(x=>x.id));
     arr.filter(x=>x&&x.id&&x.moments&&!ids.has(x.id)).forEach(x=>lib.push(x));vSave(lib);renderVideo()}).catch(()=>alert("Fichier illisible"))};
 }
@@ -239,7 +247,7 @@ function vViewer(v){
   const box=$("#p-video");
   box.innerHTML=`<div class="panel">
    <div class="rhead" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-    <div><h3 style="margin:0">${esc(v.title)}</h3><span class="muted" style="font-size:.85rem">${esc(v.author||"auteur non renseigné")} · ${esc(v.license)} · <a href="${esc(v.url)}" target="_blank" rel="noopener">voir sur YouTube</a>${v.game.white||v.game.black?` · ${esc(v.game.white)} – ${esc(v.game.black)}`:""}</span></div>
+    <div><h3 style="margin:0">${esc(v.title)}</h3><span class="muted" style="font-size:.85rem">${esc(v.author||"auteur non renseigné")} · ${esc(LIC[v.license]||v.license)} · <a href="${esc(v.url)}" target="_blank" rel="noopener">voir sur YouTube</a>${v.game.white||v.game.black?` · ${esc(v.game.white)} – ${esc(v.game.black)}`:""}</span></div>
     <button class="btn" id="vback" style="margin-left:auto">← Bibliothèque</button>
    </div>
    ${v.game.cut?`<p class="vstat err" style="margin:0">La liste de coups lue par Gemini contenait un coup illégal (« ${esc(v.game.cut)} ») : la partie s'arrête au coup ${v.game.sans.length}. Colle le PGN pour fiabiliser.</p>`:""}
@@ -249,7 +257,7 @@ function vViewer(v){
      <div class="rvnav"><button class="btn" id="vprev" aria-label="Moment précédent">◀</button><span class="mono muted" id="vpos"></span><button class="btn" id="vnext" aria-label="Moment suivant">▶</button><button class="btn" id="vflip" title="Retourner l'échiquier">⇅</button></div></div>
     <div class="vright"><div id="vmom" class="rcomment"></div>
      <ol class="vmoms" id="vmoms">${v.moments.map((m,k)=>`<li><button data-m="${k}"><span class="mono">${m.t}</span> ${esc(m.idea||m.comment.slice(0,60))}</button></li>`).join("")}</ol>
-     <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="veval">Évaluer avec Stockfish</button>${VID.shared.some(y=>y.id===v.id)?`<span class="muted" style="font-size:.8rem;align-self:center">Vidéo partagée dans le dépôt GitHub</span>`:`<button class="btn" id="vdel">Supprimer la vidéo</button>`}</div>
+     <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="veval">Évaluer avec Stockfish</button>${v.remote?`<span class="muted" style="font-size:.8rem;align-self:center">Vidéo enregistrée dans un dépôt GitHub (${esc(vWhere(v))})</span>`:`<button class="btn" id="vdel">Supprimer la vidéo</button>`}</div>
     </div>
    </div></div>`;
   VID.cg=Chessground($("#vboard"),{fen:START_FEN,coordinates:true,viewOnly:true,animation:{enabled:true,duration:140},drawable:{enabled:true,visible:true}});
@@ -288,52 +296,83 @@ async function vPlayVar(m,j){
 // exemples à plat, pour la recherche d'exemples similaires plus tard
 function videoExamples(){return vLib().flatMap(v=>v.moments.filter(m=>m.fen&&m.comment).map(m=>({fen:m.fen,comment:m.comment,idea:m.idea,vars:m.vars.map(x=>x.sans.join(" ")),ev:m.ev,src:`${v.author||"?"} — ${v.title} (${m.t}) ${v.url}&t=${m.sec}s`})))}
 
-/* ---------- bibliothèque partagée : videos.json dans le dépôt GitHub ---------- */
-function ghCfg(){return Object.assign({t:"",repo:"shlomcat/carnet-de-tactique"},store.get(VID.gh)||{})}
-function ghPanelHTML(lib){
-  const g=ghCfg(),loc=vLocal().filter(x=>!VID.shared.some(y=>y.id===x.id)).length;
+/* ---------- dépôts GitHub : fichier public du site et dépôt privé de données ---------- */
+function ghCfg(){return Object.assign({t:"",repo:"shlomcat/carnet-de-tactique",priv:""},store.get(VID.gh)||{})}
+function ghCounts(){
+  const L=vLocal(),pub=new Set(VID.shared.map(x=>x.id)),prv=new Set(VID.priv.map(x=>x.id));
+  return {pub:L.filter(x=>!isPerso(x)&&!pub.has(x.id)).length,perso:L.filter(isPerso).length,priv:L.filter(x=>!prv.has(x.id)).length};
+}
+function ghPanelHTML(){
+  const g=ghCfg(),n=ghCounts();
   return `<div class="panel" style="margin-top:16px">
-   <h3>Partager la bibliothèque sur tous tes appareils</h3>
-   <p class="muted" style="margin:0;font-size:.86rem;max-width:72ch">Les vidéos importées ici restent dans ce navigateur. Pour les retrouver sur ton téléphone, ton ordinateur et dans la version Claude du carnet, publie-les dans le fichier <span class="mono">videos.json</span> du dépôt GitHub (le site se met à jour en une minute environ). ${VID.shared.length} vidéo${VID.shared.length>1?"s":""} déjà partagée${VID.shared.length>1?"s":""}, ${loc} seulement sur cet appareil.</p>
-   <div class="vrow">
-    <div class="fld"><label for="ghrepo">Dépôt</label><input id="ghrepo" value="${esc(g.repo)}" autocomplete="off" spellcheck="false" class="mono"></div>
-    <div class="fld"><label for="ghtok">Jeton GitHub <small class="muted">(droit « Contents » sur ce dépôt)</small></label><input id="ghtok" type="password" value="${esc(g.t)}" autocomplete="off" spellcheck="false" placeholder="github_pat_…"></div>
+   <h3>Retrouver la bibliothèque sur tous tes appareils</h3>
+   <p class="muted" style="margin:0;font-size:.86rem;max-width:74ch">Les vidéos importées restent d'abord dans ce navigateur. Deux façons de les synchroniser :</p>
+   <div class="fld"><label for="ghtok">Jeton GitHub <small class="muted">(permission « Contents : Read and write » sur les dépôts ci-dessous)</small></label><input id="ghtok" style="width:100%;box-sizing:border-box" type="password" value="${esc(g.t)}" autocomplete="off" spellcheck="false" placeholder="github_pat_…"></div>
+   <div class="ghbox">
+    <div><b>Dépôt privé de données</b> <span class="muted">· recommandé, accepte toutes les vidéos, y compris en usage personnel</span></div>
+    <div class="fld"><label for="ghpriv">Dépôt privé <small class="muted">(à créer sur GitHub, visibilité « Private »)</small></label><input id="ghpriv" style="width:100%;box-sizing:border-box" value="${esc(g.priv)}" autocomplete="off" spellcheck="false" class="mono" placeholder="shlomcat/carnet-data"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn primary" id="ghsync"${g.priv&&n.priv?"":" disabled"}>${n.priv?`Envoyer ${n.priv} vidéo${n.priv>1?"s":""} au dépôt privé`:"Rien de nouveau à envoyer"}</button><span class="muted" style="font-size:.85rem">${g.priv?`${VID.priv.length} vidéo${VID.priv.length>1?"s":""} dans le dépôt privé`:"Aucun dépôt privé configuré"}</span></div>
+    <span class="muted" style="font-size:.78rem">Le site relit ce dépôt à chaque ouverture, sur chaque appareil où tu as saisi le jeton. Personne d'autre n'y a accès. La version Claude du carnet ne peut pas le lire : utilise « Exporter » puis « Importer un fichier » là-bas.</span>
    </div>
-   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn primary" id="ghpub"${loc?"":" disabled"}>Publier ${loc||""} vidéo${loc>1?"s":""} dans le dépôt</button>${g.t?`<button class="btn" id="ghdel">Oublier le jeton</button>`:""}<span id="ghstat" class="muted" style="font-size:.85rem"></span></div>
-   <p class="muted" style="margin:0;font-size:.78rem">Jeton à créer sur <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com › Settings › Fine-grained tokens</a> : accès au seul dépôt du carnet, permission « Contents : Read and write ». Il est gardé uniquement dans ce navigateur. Sans jeton : exporte le fichier et envoie-le à Claude, ou dépose-le sous le nom <span class="mono">videos.json</span> dans le dépôt (Add file › Upload files).</p>
+   <div class="ghbox">
+    <div><b>Dépôt public du site</b> <span class="muted">· seulement les vidéos sous licence CC BY ou avec l'accord de l'auteur</span></div>
+    <div class="fld"><label for="ghrepo">Dépôt du site</label><input id="ghrepo" style="width:100%;box-sizing:border-box" value="${esc(g.repo)}" autocomplete="off" spellcheck="false" class="mono"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn" id="ghpub"${n.pub?"":" disabled"}>${n.pub?`Publier ${n.pub} vidéo${n.pub>1?"s":""} libre${n.pub>1?"s":""}`:"Rien de nouveau à publier"}</button><span class="muted" style="font-size:.85rem">${VID.shared.length} publiée${VID.shared.length>1?"s":""}${n.perso?` · ${n.perso} en usage personnel, jamais publiée${n.perso>1?"s":""} ici`:""}</span></div>
+    <span class="muted" style="font-size:.78rem">Visible par tout le monde (fichier <span class="mono">videos.json</span>), et repris dans la version Claude du carnet à sa prochaine mise à jour.</span>
+   </div>
+   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${g.t?`<button class="btn" id="ghdel">Oublier le jeton</button>`:""}<span id="ghstat" class="muted" style="font-size:.85rem"></span></div>
+   <p class="muted" style="margin:0;font-size:.78rem">Jeton à créer sur <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com › Settings › Fine-grained tokens</a>, limité aux dépôts du carnet. Il est gardé uniquement dans ce navigateur.</p>
   </div>`;
 }
 function ghBind(){
-  const save=()=>store.set(VID.gh,{t:$("#ghtok").value.trim(),repo:$("#ghrepo").value.trim()});
-  $("#ghtok").onchange=save;$("#ghrepo").onchange=save;
-  if($("#ghdel"))$("#ghdel").onclick=()=>{store.set(VID.gh,{t:"",repo:ghCfg().repo});renderVideo()};
-  $("#ghpub").onclick=async()=>{save();const st=$("#ghstat"),b=$("#ghpub");b.disabled=true;st.textContent="Publication…";
-    try{const n=await ghPublish();st.textContent=`Publié : ${n} vidéos dans le dépôt. Le site sera à jour dans une minute environ.`;setTimeout(renderVideo,1500)}
+  const save=()=>{store.set(VID.gh,{t:$("#ghtok").value.trim(),repo:$("#ghrepo").value.trim(),priv:$("#ghpriv").value.trim()})};
+  $("#ghtok").onchange=()=>{save();vLoadPriv()};$("#ghpriv").onchange=()=>{save();vLoadPriv()};$("#ghrepo").onchange=save;
+  if($("#ghdel"))$("#ghdel").onclick=()=>{store.set(VID.gh,Object.assign(ghCfg(),{t:""}));VID.priv=[];VID.sig=null;renderVideo()};
+  const run=(btn,kind)=>async()=>{save();const st=$("#ghstat"),b=$(btn);b.disabled=true;st.textContent="Envoi vers GitHub…";
+    try{const n=await ghSync(kind);st.textContent=kind==="pub"?`Publié : ${n} vidéo${n>1?"s":""} dans le dépôt public. Le site sera à jour dans une minute environ.`:`Enregistré : ${n} vidéo${n>1?"s":""} dans le dépôt privé.`;setTimeout(renderVideo,1500)}
     catch(e){st.textContent="Échec : "+e.message;b.disabled=false}};
+  $("#ghsync").onclick=run("#ghsync","priv");$("#ghpub").onclick=run("#ghpub","pub");
 }
 const b64=str=>btoa(unescape(encodeURIComponent(str)));
 const unb64=str=>decodeURIComponent(escape(atob(String(str).replace(/\s/g,""))));
-async function ghPublish(){
-  const g=ghCfg();if(!g.t)throw new Error("ajoute un jeton GitHub");if(!/^[\w.-]+\/[\w.-]+$/.test(g.repo))throw new Error("dépôt invalide");
-  const api=`https://api.github.com/repos/${g.repo}/contents/videos.json`,H={Authorization:"Bearer "+g.t,Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"};
-  let sha=null,remote=[];
-  let r0;try{r0=await fetch(api+"?ref=main",{headers:H,cache:"no-store"})}catch(e){throw new Error("impossible de joindre GitHub depuis cette page : publie depuis le site shlomcat.github.io/carnet-de-tactique")}
-  if(r0.ok){const j=await r0.json();sha=j.sha;try{remote=(JSON.parse(unb64(j.content)).videos)||[]}catch(e){throw new Error("le fichier videos.json du dépôt est illisible ; rien n'a été modifié")}}
-  else if(r0.status!==404){throw new Error(r0.status===401?"jeton refusé":r0.status===403?"jeton sans accès à ce dépôt":"GitHub "+r0.status)}
-  const ids=new Set(remote.map(x=>x.id)),add=vLocal().filter(x=>!ids.has(x.id)).map(x=>{const y=Object.assign({},x);delete y.shared;return y});
-  const all=remote.concat(add);
-  const body={message:`Bibliothèque vidéos : ${all.length} vidéo${all.length>1?"s":""} (+${add.length})`,content:b64(JSON.stringify({format:"carnet-videos",version:1,videos:all},null,1)),branch:"main"};
-  if(sha)body.sha=sha;
-  const r=await fetch(api,{method:"PUT",headers:Object.assign({"Content-Type":"application/json"},H),body:JSON.stringify(body)});
+const okRepo=r=>/^[\w.-]+\/[\w.-]+$/.test(r||"");
+function ghH(t,raw){return {Authorization:"Bearer "+t,Accept:raw?"application/vnd.github.raw+json":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"}}
+async function ghRead(repo,t){
+  const api=`https://api.github.com/repos/${repo}/contents/videos.json`;
+  let r;try{r=await fetch(api,{headers:ghH(t),cache:"no-store"})}catch(e){throw new Error("impossible de joindre GitHub depuis cette page : utilise le site shlomcat.github.io/carnet-de-tactique")}
+  if(r.status===404)return {sha:null,videos:[],api};
+  if(!r.ok)throw new Error(r.status===401?"jeton refusé":r.status===403?`jeton sans accès à ${repo}`:"GitHub "+r.status);
+  const j=await r.json();let txt=null;
+  try{txt=j.content?unb64(j.content):null}catch(e){}
+  if(txt==null){const q=await fetch(api,{headers:ghH(t,1),cache:"no-store"});if(!q.ok)throw new Error("GitHub "+q.status);txt=await q.text()}
+  let d;try{d=JSON.parse(txt)}catch(e){throw new Error(`le fichier videos.json de ${repo} est illisible ; rien n'a été modifié`)}
+  return {sha:j.sha,videos:Array.isArray(d.videos)?d.videos:[],api};
+}
+async function ghSync(kind){
+  const g=ghCfg(),repo=kind==="pub"?g.repo:g.priv;
+  if(!g.t)throw new Error("ajoute un jeton GitHub");if(!okRepo(repo))throw new Error("nom de dépôt invalide (format : propriétaire/dépôt)");
+  if(kind==="priv"&&repo===g.repo)throw new Error("le dépôt privé doit être différent du dépôt public du site");
+  const cur=await ghRead(repo,g.t),ids=new Set(cur.videos.map(x=>x.id));
+  const add=vLocal().filter(x=>!ids.has(x.id)&&(kind==="priv"||!isPerso(x))).map(x=>{const y=Object.assign({},x);delete y.remote;return y});
+  const all=cur.videos.concat(add);
+  if(kind==="pub"&&all.some(isPerso))throw new Error("le fichier public contient une vidéo en usage personnel ; rien n'a été modifié");
+  const body={message:`Bibliothèque vidéos : ${all.length} vidéo${all.length>1?"s":""} (+${add.length})`,content:b64(JSON.stringify({format:"carnet-videos",version:1,videos:all},null,1))};
+  if(cur.sha)body.sha=cur.sha;
+  const r=await fetch(cur.api,{method:"PUT",headers:Object.assign({"Content-Type":"application/json"},ghH(g.t)),body:JSON.stringify(body)});
   if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error((j.message||"GitHub "+r.status)+(r.status===409?" (réessaie)":""))}
-  VID.shared=all;VID.sig=null;return all.length;
+  if(kind==="pub")VID.shared=all;else VID.priv=all;VID.sig=null;return all.length;
+}
+function vRefresh(){
+  VID.sig=null;
+  const p=document.getElementById("p-video");if(p&&!p.hidden&&!VID.run&&typeof renderVideo==="function"&&!VID.cur)renderVideo();
+  if(typeof RV!=="undefined"&&RV.g&&typeof revGo==="function"&&RV.ply&&!RV.v)revGo(RV.ply);
 }
 function vLoadShared(){
-  return fetch("videos.json",{cache:"no-cache"}).then(r=>r.ok?r.json():null).then(d=>{
-    VID.shared=(d&&Array.isArray(d.videos)?d.videos:[]);VID.sig=null;
-    const p=document.getElementById("p-video");if(p&&!p.hidden&&!VID.run&&typeof renderVideo==="function")renderVideo();
-    if(typeof RV!=="undefined"&&RV.g&&typeof revGo==="function"&&RV.ply)revGo(RV.ply);
-  }).catch(()=>{});
+  return fetch("videos.json",{cache:"no-cache"}).then(r=>r.ok?r.json():null).then(d=>{VID.shared=(d&&Array.isArray(d.videos)?d.videos:[]);vRefresh()}).catch(()=>{});
+}
+function vLoadPriv(){
+  const g=ghCfg();if(!g.t||!okRepo(g.priv)){VID.priv=[];return Promise.resolve()}
+  return ghRead(g.priv,g.t).then(d=>{VID.priv=d.videos;vRefresh()}).catch(e=>{VID.privErr=e.message;console.warn("dépôt privé :",e.message)});
 }
 
 /* ---------- exemples similaires : comparaison de positions ---------- */
@@ -390,4 +429,5 @@ function videoContext(fen){
   return "Exemples tirés de vidéos pédagogiques, dans des positions semblables (repérées automatiquement par la structure de pions et le matériel ; sers-t'en seulement s'ils éclairent vraiment la position, et cite alors la source entre parenthèses) :\n"+
    L.map(x=>`- ressemblance ${Math.round(x.sc*100)} %${x.flip?" (couleurs inversées : l'exemple concerne l'autre camp)":""} ; position de l'exemple (FEN) : ${x.m.fen}${x.m.idea?` ; thème : ${x.m.idea}`:""} ; explication du commentateur : ${x.m.comment}${x.m.vars.length?` ; variantes citées : ${x.m.vars.map(v=>v.sans.join(" ")+(v.verdict?" ("+v.verdict+")":"")).join(" ; ")}`:""} ; source : ${vSrc(x)}`).join("\n")+"\n";
 }
-vLoadShared();
+// après le script principal (store, RV… sont définis plus bas dans la page)
+if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",()=>{vLoadShared();vLoadPriv()});else{vLoadShared();vLoadPriv()}
