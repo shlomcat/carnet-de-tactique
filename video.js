@@ -54,10 +54,13 @@ function vPrompt(o){
    o.from!=null?`Ne traite que le passage de ${fmtT(o.from)} à ${fmtT(o.to)} ; les horodatages restent ceux de la vidéo complète.`:""
   ].filter(Boolean).join("\n");
 }
-async function geminiOnce(cfg,model,url,o){
-  const part={fileData:{fileUri:url}};
-  if(o.from!=null)part.videoMetadata={startOffset:Math.round(o.from)+"s",endOffset:Math.round(o.to)+"s"};
-  const body=s=>({contents:[{parts:[part,{text:vPrompt(o)}]}],generationConfig:Object.assign({responseMimeType:"application/json",temperature:0.2},s?{responseSchema:VSCHEMA}:{})});
+async function geminiOnce(cfg,model,url,o,plain){
+  const part={fileData:{fileUri:url}},vm={};
+  if(o.from!=null){vm.startOffset=Math.round(o.from)+"s";if(o.to!=null)vm.endOffset=Math.round(o.to)+"s"}
+  if(o.fps&&!plain)vm.fps=o.fps;
+  if(Object.keys(vm).length)part.videoMetadata=vm;
+  const gc=s=>Object.assign({responseMimeType:"application/json",temperature:0.2},s?{responseSchema:o.schema||VSCHEMA}:{},o.lowres&&!plain?{mediaResolution:"MEDIA_RESOLUTION_LOW"}:{});
+  const body=s=>({contents:[{parts:[part,{text:o.prompt||vPrompt(o)}]}],generationConfig:gc(s)});
   const call=async s=>{
     let r;
     try{r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":cfg.k},body:JSON.stringify(body(s))})}
@@ -70,7 +73,9 @@ async function geminiOnce(cfg,model,url,o){
     return {data:vParseJSON(txt),usage:j.usageMetadata||null};
   };
   try{return await call(true)}
-  catch(e){if(e.status===400&&/schema|response_schema|responseSchema|Invalid JSON payload/i.test(e.message))return call(false);throw e}
+  catch(e){
+    if(e.status===400&&!plain&&(o.fps||o.lowres)&&/fps|media_?resolution|video_?metadata/i.test(e.message))return geminiOnce(cfg,model,url,o,true);
+    if(e.status===400&&/schema|response_schema|responseSchema|Invalid JSON payload/i.test(e.message))return call(false);throw e}
 }
 // saturation (503, quota 429) : on réessaie, puis on bascule sur un autre modèle
 const busyErr=e=>e&&(e.status===503||e.status===429||e.status===500||/high demand|overloaded|unavailable|try again later|resource.?exhausted|quota/i.test(e.message||""));
@@ -85,7 +90,7 @@ async function gemini(cfg,url,o,info){
       catch(e){last=e;
         if(missingErr(e)){info&&info(`Modèle ${model} indisponible, essai avec un autre…`);break}
         if(!busyErr(e))throw e;
-        if(k<2){const w=k?15:5;info&&info(`${model} est saturé, nouvel essai dans ${w} s…`);await sleep(w*1000)}
+        if(k<2){const q=e.status===429||/quota|resource.?exhausted/i.test(e.message||""),w=q?(k?60:30):(k?15:5);info&&info(`${model} ${q?"a atteint sa limite de débit":"est saturé"}, nouvel essai dans ${w} s…`);await sleep(w*1000)}
         else info&&info(`${model} reste saturé, essai avec un autre modèle…`)}
     }
   }
@@ -177,6 +182,52 @@ async function vEval(v,onStep){
 const evW=cp=>cp==null?"":cp>=1400?"mat (blancs)":cp<=-1400?"mat (noirs)":(cp>0?"+":"")+(cp/100).toFixed(1).replace(".",",");
 
 /* ---------- import ---------- */
+/* ---------- repérage des parties d'une longue vidéo ---------- */
+const TOC_SCHEMA={type:"OBJECT",properties:{titre:{type:"STRING"},duree:{type:"STRING"},
+  parties:{type:"ARRAY",items:{type:"OBJECT",properties:{debut:{type:"STRING"},fin:{type:"STRING"},blancs:{type:"STRING"},noirs:{type:"STRING"},description:{type:"STRING"}},required:["debut","fin"]}}},required:["parties"]};
+function tocPrompt(from,to){
+  return ["Cette vidéo d'échecs peut contenir plusieurs parties commentées l'une après l'autre.",
+   "Fais-en la table des matières, en JSON :",
+   "- titre : le titre de la vidéo s'il est visible ;",
+   "- duree : la durée totale de la vidéo (H:MM:SS ou MM:SS) ;",
+   "- parties : chaque partie d'échecs commentée, dans l'ordre, avec debut et fin (horodatages de la vidéo complète, H:MM:SS ou MM:SS), blancs et noirs (noms ou pseudos affichés), et une description de quelques mots (ouverture, cadence, événement).",
+   "Une partie commence quand l'échiquier revient à la position initiale ou qu'une nouvelle partie est annoncée, et finit quand le commentateur passe à la suivante. N'inclus pas l'introduction, les publicités, ni les discussions sans partie.",
+   "Si la vidéo ne commente qu'une seule partie, renvoie une seule entrée.",
+   from!=null?`Ne traite que le passage de ${fmtT(from)} à ${to!=null?fmtT(to):"la fin"}.`:""].filter(Boolean).join("\n");
+}
+async function vToc(cfg,yurl,from,to,say){
+  const o={prompt:tocPrompt(from,to),schema:TOC_SCHEMA,fps:0.2,lowres:true};
+  if(from!=null||to!=null){o.from=from||0;o.to=to!=null?to:null}
+  const {data,usage,model}=await gemini(cfg,yurl,o,say);
+  const end=to!=null?to:toSec(data.duree);
+  let games=(data.parties||[]).map(g=>({a:toSec(g.debut),b:toSec(g.fin),white:String(g.blancs||""),black:String(g.noirs||""),desc:String(g.description||"")}))
+    .filter(g=>g.a!=null&&g.b!=null&&g.b-g.a>=60).sort((x,y)=>x.a-y.a);
+  games=games.map(g=>({...g,a:Math.max(g.a,from||0),b:end?Math.min(g.b,end):g.b})).filter(g=>g.b>g.a);
+  return {games,title:String(data.titre||""),dur:end,tok:usage&&usage.totalTokenCount||0,model};
+}
+// lit une partie (passage a–b), en tranches de 8 minutes qui se suivent
+async function vExtract(cfg,yurl,a,b,pgn,say,label){
+  const chunks=[];if(a!=null&&b!=null){const L=480;for(let x=a;x<b;x+=L)chunks.push([x,Math.min(b,x+L)])}else chunks.push([a,b]);
+  const raw={titre:"",partie:{coups:[]},moments:[],cut:null,fixed:0};let tok=0,usedModel=cfg.model;
+  for(let k=0;k<chunks.length;k++){
+    const [x,y]=chunks[k];
+    say(`${label}Gemini regarde ${chunks.length>1?`le passage ${k+1}/${chunks.length} (${fmtT(x)}–${fmtT(y)})`:"la vidéo"}… compte 1 à 3 minutes.`);
+    const o={pgn,prev:pgn?null:replay(START_FEN,raw.partie.coups).sans};
+    if(x!=null||y!=null){o.from=x||0;o.to=y!=null?y:(x||0)+3600}
+    const {data,usage,model}=await gemini(cfg,yurl,o,m=>say(label+m));usedModel=model;
+    if(usage&&usage.totalTokenCount)tok+=usage.totalTokenCount;
+    if(data.titre&&!raw.titre)raw.titre=data.titre;
+    const p=data.partie||{};["blancs","noirs","evenement"].forEach(f=>{if(p[f]&&!raw.partie[f])raw.partie[f]=p[f]});
+    if(p.coups&&p.coups.length){const prev=raw.partie.coups,nw=p.coups.map(cleanSan);
+      // Gemini peut répéter le début : on garde la plus longue suite légale
+      const J=replay(START_FEN,prev.concat(nw)),A=replay(START_FEN,nw),best=A.sans.length>J.sans.length?A:J;
+      if(best.sans.length>prev.length){raw.partie.coups=best.sans;raw.cut=best.bad?best.bad.san:null;raw.fixed+=best.fixed||0}else if(!raw.cut&&J.bad)raw.cut=J.bad.san}
+    raw.moments.push(...(data.moments||[]));
+  }
+  return {raw,tok,model:usedModel};
+}
+
+/* ---------- import ---------- */
 async function vImport(){
   const cfg=vCfg(),url=$("#vurl").value.trim(),id=ytId(url),st=$("#vstat");
   const say=(t,err)=>{st.hidden=false;st.className="vstat"+(err?" err":"");st.textContent=t};
@@ -187,41 +238,50 @@ async function vImport(){
   const from=toSec($("#vfrom").value),to=toSec($("#vto").value),pgn=pgnMoves($("#vpgn").value);
   if($("#vpgn").value.trim()&&!(pgn&&pgn.length))return say("Le PGN fourni est illisible.",1);
   if(from!=null&&to!=null&&to<=from)return say("La fin doit être après le début.",1);
-  const yurl="https://www.youtube.com/watch?v="+id;
-  const chunks=[];if(from!=null&&to!=null){const L=480;for(let a=from;a<to;a+=L)chunks.push([a,Math.min(to,a+L)])}else chunks.push([from,to]);
+  const yurl="https://www.youtube.com/watch?v="+id,split=$("#vsplit").checked&&!pgn;
+  const form={title:$("#vtitle").value.trim(),author:$("#vauthor").value.trim(),license:$("#vlic").value};
   VID.run=true;$("#vgo").disabled=true;
-  const raw={titre:"",partie:{coups:[]},moments:[],cut:null};let tok=0,usedModel=cfg.model;
+  const done=[],failed=[];let tok=0,vtitle=form.title;
   try{
-    for(let k=0;k<chunks.length;k++){
-      const [a,b]=chunks[k];
-      say(chunks.length>1?`Gemini regarde la vidéo : passage ${k+1}/${chunks.length} (${fmtT(a)}–${fmtT(b)})… compte 1 à 3 minutes par passage.`:"Gemini regarde la vidéo… compte 1 à 3 minutes selon la durée.");
-      const o={pgn,prev:pgn?null:replay(START_FEN,raw.partie.coups).sans};
-      if(a!=null||b!=null){o.from=a||0;o.to=b!=null?b:a+3600}
-      const {data,usage,model}=await gemini(cfg,yurl,o,m=>say(m));usedModel=model;
-      if(usage&&usage.totalTokenCount)tok+=usage.totalTokenCount;
-      if(data.titre&&!raw.titre)raw.titre=data.titre;
-      const p=data.partie||{};["blancs","noirs","evenement"].forEach(f=>{if(p[f]&&!raw.partie[f])raw.partie[f]=p[f]});
-      if(p.coups&&p.coups.length){const prev=raw.partie.coups,nw=p.coups.map(cleanSan);
-        // Gemini peut répéter le début : on garde la plus longue suite légale
-        const J=replay(START_FEN,prev.concat(nw)),A=replay(START_FEN,nw),best=A.sans.length>J.sans.length?A:J;
-        if(best.sans.length>prev.length){raw.partie.coups=best.sans;raw.cut=best.bad?best.bad.san:null;raw.fixed=(raw.fixed||0)+(best.fixed||0)}else if(!raw.cut&&J.bad)raw.cut=J.bad.san}
-      raw.moments.push(...(data.moments||[]));
+    // 1. repérage des parties (passage rapide, image allégée)
+    let segs=[{a:from,b:to,white:"",black:"",desc:""}];
+    if(split){
+      say("Repérage des parties de la vidéo… compte 1 à 2 minutes.");
+      try{const t=await vToc(cfg,yurl,from,to,m=>say("Repérage : "+m));tok+=t.tok;if(!vtitle)vtitle=t.title;
+        if(t.games.length)segs=t.games;else if(t.dur)segs=[{a:from||0,b:t.dur,white:"",black:"",desc:""}]}
+      catch(e){say("Repérage impossible ("+e.message+"), analyse de la vidéo d'un seul tenant…")}
     }
-    const {main,ms}=vBuild(raw,{pgn});
-    if(!ms.length)throw new Error("Gemini n'a trouvé aucun moment commenté. Essaie un autre passage ou le modèle Argon.");
-    const v={id:id+"-"+Date.now().toString(36),vid:id,url:yurl,at:Date.now(),model:usedModel,tokens:tok,
-      title:raw.titre||$("#vtitle").value.trim()||"Vidéo "+id,author:$("#vauthor").value.trim(),license:$("#vlic").value,
-      game:{white:raw.partie.blancs||"",black:raw.partie.noirs||"",event:raw.partie.evenement||"",sans:main.sans,given:!!pgn,cut:main.bad?main.bad.san:(pgn?null:raw.cut),fixed:(main.fixed||0)+(pgn?0:raw.fixed||0)},
-      moments:ms};
-    if($("#vtitle").value.trim())v.title=$("#vtitle").value.trim();
-    const lib=vLocal();lib.unshift(v);vSave(lib);
-    say(`${ms.length} moments extraits, ${main.sans.length} coups vérifiés${v.game.fixed?` (dont ${v.game.fixed} mal noté${v.game.fixed>1?"s":""} par Gemini et corrigé${v.game.fixed>1?"s":""})`:""}${v.game.cut?` (liste coupée au coup illégal « ${v.game.cut} »)`:""}. Évaluation Stockfish en cours…`);
-    VID.cur=v.id;VID.m=0;renderVideo();
-    await vEval(v,i=>{const e=$("#vstat");if(e)e.textContent=`Évaluation Stockfish : moment ${i+1}/${v.moments.length}…`});
-    vSave(vLib().map(x=>x.id===v.id?v:x));
-    const e=$("#vstat");if(e){e.textContent=`Terminé : ${ms.length} moments, ${main.sans.length} coups vérifiés${v.game.fixed?` dont ${v.game.fixed} corrigé${v.game.fixed>1?"s":""}`:""}${v.game.cut?`, arrêt sur « ${v.game.cut} »`:""}${tok?` · ${Math.round(tok/1000)} k jetons`:""} · modèle ${usedModel}.`}
-    if(VID.cur===v.id)vShowMoment(VID.m);
-    vAutoPush();
+    const n=segs.length;
+    // 2. une analyse par partie ; chaque partie est enregistrée dès qu'elle est prête
+    for(let k=0;k<n;k++){
+      const g=segs[k],label=n>1?`Partie ${k+1}/${n}${g.white||g.black?` (${g.white} – ${g.black})`:""} · `:"";
+      try{
+        const r=await vExtract(cfg,yurl,g.a,g.b,pgn,say,label);tok+=r.tok;
+        const {main,ms}=vBuild(r.raw,{pgn});
+        if(!ms.length)throw new Error("aucun moment commenté trouvé");
+        const white=r.raw.partie.blancs||g.white,black=r.raw.partie.noirs||g.black,base=vtitle||r.raw.titre||"Vidéo "+id;
+        const v={id:id+"-"+(n>1?"p"+(k+1)+"-":"")+Date.now().toString(36),vid:id,url:yurl,at:Date.now(),model:r.model,tokens:r.tok,
+          title:n>1?`${base} — partie ${k+1}${white||black?` : ${white} – ${black}`:""}`:base,author:form.author,license:form.license,
+          seg:g.a!=null||g.b!=null?{from:g.a,to:g.b}:null,part:n>1?{k:k+1,n}:null,
+          game:{white,black,event:r.raw.partie.evenement||g.desc||"",sans:main.sans,given:!!pgn,cut:main.bad?main.bad.san:(pgn?null:r.raw.cut),fixed:(main.fixed||0)+(pgn?0:r.raw.fixed||0)},
+          moments:ms};
+        // les parties d'une même vidéo restent dans l'ordre en tête de la bibliothèque
+        const lib=vLocal();lib.splice(done.length,0,v);vSave(lib);
+        say(`${label}${ms.length} moments, ${main.sans.length} coups vérifiés. Évaluation Stockfish…`);
+        await vEval(v,i=>say(`${label}Évaluation Stockfish : moment ${i+1}/${v.moments.length}…`));
+        vSave(vLocal().map(x=>x.id===v.id?v:x));
+        done.push({k:k+1,v});
+        await vAutoPush();
+      }catch(e){failed.push({k:k+1,msg:e.message})}
+    }
+    if(!done.length)throw new Error(failed.map(f=>(n>1?`partie ${f.k} : `:"")+f.msg).join(" ; ")||"aucune partie extraite");
+    if(n===1){VID.cur=done[0].v.id;VID.m=0}
+    renderVideo();
+    const v=done.length===1?done[0].v:null;
+    const msg=n>1?`Terminé : ${done.length} partie${done.length>1?"s":""} importée${done.length>1?"s":""} sur ${n} (${done.map(d=>d.v.moments.length).reduce((a,b)=>a+b,0)} moments)${failed.length?`. Échec ${failed.map(f=>`partie ${f.k} : ${f.msg}`).join(" ; ")}`:""}${tok?` · ${Math.round(tok/1000)} k jetons`:""}.`
+      :`Terminé : ${v.moments.length} moments, ${v.game.sans.length} coups vérifiés${v.game.fixed?` dont ${v.game.fixed} corrigé${v.game.fixed>1?"s":""}`:""}${v.game.cut?`, arrêt sur « ${v.game.cut} »`:""}${tok?` · ${Math.round(tok/1000)} k jetons`:""} · modèle ${v.model}.`;
+    const e=$("#vstat");if(e){e.hidden=false;e.className="vstat"+(failed.length?" err":"");e.textContent=msg}
+    if(VID.cur&&v&&VID.cur===v.id)vShowMoment(VID.m);
   }catch(e){say("Échec : "+e.message,1)}
   finally{VID.run=false;const b=$("#vgo");if(b)b.disabled=false}
 }
@@ -247,13 +307,14 @@ function renderVideo(){
      <div class="fld"><label for="vfrom">Début <small class="muted">mm:ss</small></label><input id="vfrom" inputmode="numeric" placeholder="0:00" class="mono"></div>
      <div class="fld"><label for="vto">Fin <small class="muted">mm:ss</small></label><input id="vto" inputmode="numeric" placeholder="tout" class="mono"></div>
     </div>
+    <label class="chk"><input type="checkbox" id="vsplit" checked> Découper automatiquement si la vidéo commente plusieurs parties</label>
     <details><summary class="muted" style="cursor:pointer;font-size:.88rem">PGN de la partie, si tu le connais (plus fiable)</summary>
      <textarea id="vpgn" rows="4" class="mono vta" placeholder="1. e4 c6 2. d4 d5 …"></textarea></details>
     <label class="chk" id="vokl"><input type="checkbox" id="vok"> Je confirme : la vidéo est sous licence CC BY, ou j'ai l'accord de son auteur.</label>
     <p class="muted" id="vpersol" style="margin:0;font-size:.82rem" hidden>Usage personnel : la vidéo et ses exemples restent dans ce navigateur et dans ton dépôt privé si tu en configures un ; ils ne sont jamais publiés dans le dépôt public du site.</p>
     <div><button class="btn primary" id="vgo">Analyser la vidéo</button></div>
     <div id="vstat" class="vstat" hidden></div>
-    <p class="muted" style="margin:0;font-size:.78rem">Pour une longue vidéo, indique début et fin : elle est découpée en passages de 8 minutes, plus précis. Sur YouTube, la licence s'affiche sous la description (« Licence Creative Commons Attribution »).</p>
+    <p class="muted" style="margin:0;font-size:.78rem">Une longue vidéo est d'abord parcourue pour repérer ses parties, puis chaque partie est lue en passages de 8 minutes et enregistrée séparément. Compte 10 à 30 minutes pour une vidéo d'une heure : garde la page ouverte. Avec un PGN, la vidéo est traitée comme une seule partie. Sur YouTube, la licence s'affiche sous la description (« Licence Creative Commons Attribution »).</p>
    </div>
    <div class="panel${cfg.k?"":" needkey"}">
     <h3>Clé Gemini</h3>
@@ -513,7 +574,7 @@ async function vContinue(id){
     const lost=v.moments.filter(m=>m.warn&&m.warn.length).map(m=>m.sec);
     const from=lost.length?Math.max(0,Math.min(...lost)-90):null;
     const o={prev:known,cont:{fen:R0.fens[n],next:`${Math.floor(n/2)+1} des ${n%2?"noirs":"blancs"}`}};
-    if(from!=null){o.from=from;o.to=from+3600}
+    if(from!=null){o.from=from;o.to=v.seg&&v.seg.to?v.seg.to:from+3600}
     say(`Gemini relit la vidéo${from!=null?` à partir de ${fmtT(from)}`:""} pour lire la suite après ${plyName(n,known[n-1])}… compte 1 à 3 minutes.`);
     const {data,model}=await gemini(cfg,v.url,o,m=>say(m));
     const nw=((data.partie&&data.partie.coups)||[]).map(cleanSan);
