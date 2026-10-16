@@ -53,13 +53,13 @@ function vPrompt(o){
    o.from!=null?`Ne traite que le passage de ${fmtT(o.from)} à ${fmtT(o.to)} ; les horodatages restent ceux de la vidéo complète.`:""
   ].filter(Boolean).join("\n");
 }
-async function gemini(cfg,url,o){
+async function geminiOnce(cfg,model,url,o){
   const part={fileData:{fileUri:url}};
   if(o.from!=null)part.videoMetadata={startOffset:Math.round(o.from)+"s",endOffset:Math.round(o.to)+"s"};
   const body=s=>({contents:[{parts:[part,{text:vPrompt(o)}]}],generationConfig:Object.assign({responseMimeType:"application/json",temperature:0.2},s?{responseSchema:VSCHEMA}:{})});
   const call=async s=>{
     let r;
-    try{r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cfg.model)}:generateContent`,{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":cfg.k},body:JSON.stringify(body(s))})}
+    try{r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":cfg.k},body:JSON.stringify(body(s))})}
     catch(e){throw new Error("Impossible de joindre l'API Gemini depuis cette page (réseau ou page hébergée qui bloque les appels externes). Utilise le site GitHub.")}
     const j=await r.json().catch(()=>({}));
     if(!r.ok){const m=(j.error&&j.error.message)||("HTTP "+r.status);const e=new Error(m);e.status=r.status;throw e}
@@ -70,6 +70,25 @@ async function gemini(cfg,url,o){
   };
   try{return await call(true)}
   catch(e){if(e.status===400&&/schema|response_schema|responseSchema|Invalid JSON payload/i.test(e.message))return call(false);throw e}
+}
+// saturation (503, quota 429) : on réessaie, puis on bascule sur un autre modèle
+const busyErr=e=>e&&(e.status===503||e.status===429||e.status===500||/high demand|overloaded|unavailable|try again later|resource.?exhausted|quota/i.test(e.message||""));
+const missingErr=e=>e&&(e.status===404||/not found|is not supported|unknown model/i.test(e.message||""));
+const sleep=ms=>new Promise(z=>setTimeout(z,ms));
+async function gemini(cfg,url,o,info){
+  const models=[cfg.model,...["gemini-3.6-flash","gemini-3.8-flash","gemini-3.5-flash-lite"].filter(m=>m!==cfg.model)];
+  let last=null;
+  for(const model of models){
+    for(let k=0;k<3;k++){
+      try{const r=await geminiOnce(cfg,model,url,o);r.model=model;return r}
+      catch(e){last=e;
+        if(missingErr(e)){info&&info(`Modèle ${model} indisponible, essai avec un autre…`);break}
+        if(!busyErr(e))throw e;
+        if(k<2){const w=k?15:5;info&&info(`${model} est saturé, nouvel essai dans ${w} s…`);await sleep(w*1000)}
+        else info&&info(`${model} reste saturé, essai avec un autre modèle…`)}
+    }
+  }
+  throw new Error("tous les modèles Gemini sont saturés pour le moment, réessaie dans quelques minutes ("+(last&&last.message||"")+")");
 }
 function vParseJSON(t){
   t=String(t).trim().replace(/^```(?:json)?\s*/i,"").replace(/```\s*$/,"");
@@ -147,14 +166,14 @@ async function vImport(){
   const yurl="https://www.youtube.com/watch?v="+id;
   const chunks=[];if(from!=null&&to!=null){const L=480;for(let a=from;a<to;a+=L)chunks.push([a,Math.min(to,a+L)])}else chunks.push([from,to]);
   VID.run=true;$("#vgo").disabled=true;
-  const raw={titre:"",partie:{coups:[]},moments:[],cut:null};let tok=0;
+  const raw={titre:"",partie:{coups:[]},moments:[],cut:null};let tok=0,usedModel=cfg.model;
   try{
     for(let k=0;k<chunks.length;k++){
       const [a,b]=chunks[k];
       say(chunks.length>1?`Gemini regarde la vidéo : passage ${k+1}/${chunks.length} (${fmtT(a)}–${fmtT(b)})… compte 1 à 3 minutes par passage.`:"Gemini regarde la vidéo… compte 1 à 3 minutes selon la durée.");
       const o={pgn,prev:pgn?null:replay(START_FEN,raw.partie.coups).sans};
       if(a!=null||b!=null){o.from=a||0;o.to=b!=null?b:a+3600}
-      const {data,usage}=await gemini(cfg,yurl,o);
+      const {data,usage,model}=await gemini(cfg,yurl,o,m=>say(m));usedModel=model;
       if(usage&&usage.totalTokenCount)tok+=usage.totalTokenCount;
       if(data.titre&&!raw.titre)raw.titre=data.titre;
       const p=data.partie||{};["blancs","noirs","evenement"].forEach(f=>{if(p[f]&&!raw.partie[f])raw.partie[f]=p[f]});
@@ -166,7 +185,7 @@ async function vImport(){
     }
     const {main,ms}=vBuild(raw,{pgn});
     if(!ms.length)throw new Error("Gemini n'a trouvé aucun moment commenté. Essaie un autre passage ou le modèle Argon.");
-    const v={id:id+"-"+Date.now().toString(36),vid:id,url:yurl,at:Date.now(),model:cfg.model,tokens:tok,
+    const v={id:id+"-"+Date.now().toString(36),vid:id,url:yurl,at:Date.now(),model:usedModel,tokens:tok,
       title:raw.titre||$("#vtitle").value.trim()||"Vidéo "+id,author:$("#vauthor").value.trim(),license:$("#vlic").value,
       game:{white:raw.partie.blancs||"",black:raw.partie.noirs||"",event:raw.partie.evenement||"",sans:main.sans,given:!!pgn,cut:main.bad?main.bad.san:(pgn?null:raw.cut)},
       moments:ms};
@@ -176,7 +195,7 @@ async function vImport(){
     VID.cur=v.id;VID.m=0;renderVideo();
     await vEval(v,i=>{const e=$("#vstat");if(e)e.textContent=`Évaluation Stockfish : moment ${i+1}/${v.moments.length}…`});
     vSave(vLib().map(x=>x.id===v.id?v:x));
-    const e=$("#vstat");if(e){e.textContent=`Terminé : ${ms.length} moments, ${main.sans.length} coups vérifiés${tok?` · ${Math.round(tok/1000)} k jetons`:""}.`}
+    const e=$("#vstat");if(e){e.textContent=`Terminé : ${ms.length} moments, ${main.sans.length} coups vérifiés${tok?` · ${Math.round(tok/1000)} k jetons`:""} · modèle ${usedModel}.`}
     if(VID.cur===v.id)vShowMoment(VID.m);
   }catch(e){say("Échec : "+e.message,1)}
   finally{VID.run=false;const b=$("#vgo");if(b)b.disabled=false}
